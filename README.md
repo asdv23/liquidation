@@ -97,3 +97,181 @@ POLLING_INTERVAL=300000  # 5分钟
 - 集成清算模块，自动发送清算交易。
 - 增加监控和告警功能，实时通知不安全贷款。
 - 优化数据库查询，支持复杂统计和分析。
+
+## 已实现功能
+
+### 1. 健康因子监控
+- 多级阈值监控（清算阈值、危险阈值、健康阈值）
+- 动态检查间隔（基于健康因子的渐进式检查）
+- 可配置的最小/最大检查间隔（默认：200ms - 30分钟）
+
+### 2. 数据库支持
+- 使用 Prisma + SQLite 存储贷款信息
+- 记录贷款健康因子历史
+- 追踪清算事件和延迟
+- 支持多链数据管理
+
+### 3. 清算事件追踪
+- 记录清算发现时间
+- 追踪清算执行时间
+- 记录清算交易哈希
+- 计算清算延迟时间
+
+### 4. 多链支持
+- 支持 Base 和 Optimism 网络
+- 链配置管理
+- 合约连接验证
+- 事件监听系统
+
+### 5. 事件监听
+- Borrow 事件监听
+- Repay 事件监听
+- LiquidationCall 事件监听
+- 自动更新贷款状态
+
+### 6. 配置管理
+- 环境变量配置
+- 链配置管理
+- 阈值配置
+- 检查间隔配置
+
+## 技术栈
+- NestJS
+- TypeScript
+- Prisma
+- SQLite
+- ethers.js
+
+## 环境要求
+- Node.js >= 18.18
+- npm
+
+## 安装
+```bash
+npm install
+```
+
+## 配置
+1. 创建 `.env` 文件
+2. 配置数据库连接：
+```
+DATABASE_URL="file:./dev.db"
+```
+3. 配置检查间隔（可选）：
+```
+MIN_CHECK_INTERVAL=200
+MAX_CHECK_INTERVAL=1800000
+```
+
+## 运行
+```bash
+# 开发模式
+npm run start:dev
+
+# 生产模式
+npm run start:prod
+```
+
+## 数据库初始化
+```bash
+npx prisma generate
+npx prisma db push
+```
+
+## 后台服务管理
+
+### 1. 编译项目
+```bash
+# 编译 TypeScript 代码
+npm run build
+
+# 生成 Prisma 客户端
+npx prisma generate
+```
+
+### 2. 启动后台服务
+```bash
+# 使用 nohup 启动服务并将输出重定向到日志文件
+nohup npm run start:prod > liquidation.log 2>&1 &
+
+# 查看进程 ID
+ps aux | grep "npm run start:prod" | grep -v grep
+
+# 查看日志
+tail -f liquidation.log
+```
+
+### 3. 重启服务
+```bash
+# 查找进程 ID
+ps aux | grep "npm run start:prod" | grep -v grep
+
+# 停止服务
+kill <进程ID>
+
+# 重新启动服务
+nohup npm run start:prod > liquidation.log 2>&1 &
+```
+
+### 4. 更新服务
+```bash
+# 1. 拉取最新代码
+git pull
+
+# 2. 安装依赖
+npm install
+
+# 3. 编译项目
+npm run build
+
+# 4. 更新数据库
+npx prisma generate
+npx prisma db push
+
+# 5. 重启服务
+# 查找进程 ID
+ps aux | grep "npm run start:prod" | grep -v grep
+# 停止服务
+kill <进程ID>
+# 启动服务
+nohup npm run start:prod > liquidation.log 2>&1 &
+```
+
+### 5. 监控服务状态
+```bash
+# 查看服务进程状态
+ps aux | grep "npm run start:prod" | grep -v grep
+
+# 查看服务日志
+tail -f liquidation.log
+
+# 查看服务错误日志
+grep "ERROR" liquidation.log
+
+# 查看服务内存使用
+pm2 monit  # 如果使用 PM2 管理进程
+```
+
+### 6. 使用 PM2 管理服务（推荐）
+```bash
+# 安装 PM2
+npm install -g pm2
+
+# 启动服务
+pm2 start dist/main.js --name "liquidation-bot"
+
+# 查看服务状态
+pm2 status
+
+# 查看日志
+pm2 logs liquidation-bot
+
+# 重启服务
+pm2 restart liquidation-bot
+
+# 停止服务
+pm2 stop liquidation-bot
+
+# 删除服务
+pm2 delete liquidation-bot
+```
