@@ -22,6 +22,7 @@ model Loan {
   liquidationTime DateTime? // 清算时间
   liquidator String? // 清算人地址
   liquidationDelay Int? // 从发现到清算的延迟（毫秒）
+  healthHistory LoanHealthHistory[] // 添加反向关系
 
   @@unique([chainName, user])
   @@index([healthFactor])

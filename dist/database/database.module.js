@@ -6,19 +6,16 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
     return c > 3 && r && Object.defineProperty(target, key, r), r;
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.BorrowDiscoveryModule = void 0;
+exports.DatabaseModule = void 0;
 const common_1 = require("@nestjs/common");
-const borrow_discovery_service_1 = require("./borrow-discovery.service");
-const chain_module_1 = require("../chain/chain.module");
-const database_module_1 = require("../database/database.module");
-let BorrowDiscoveryModule = class BorrowDiscoveryModule {
+const database_service_1 = require("./database.service");
+let DatabaseModule = class DatabaseModule {
 };
-exports.BorrowDiscoveryModule = BorrowDiscoveryModule;
-exports.BorrowDiscoveryModule = BorrowDiscoveryModule = __decorate([
+exports.DatabaseModule = DatabaseModule;
+exports.DatabaseModule = DatabaseModule = __decorate([
     (0, common_1.Module)({
-        imports: [chain_module_1.ChainModule, database_module_1.DatabaseModule],
-        providers: [borrow_discovery_service_1.BorrowDiscoveryService],
-        exports: [borrow_discovery_service_1.BorrowDiscoveryService],
+        providers: [database_service_1.DatabaseService],
+        exports: [database_service_1.DatabaseService],
     })
-], BorrowDiscoveryModule);
-//# sourceMappingURL=borrow-discovery.module.js.map
+], DatabaseModule);
+//# sourceMappingURL=database.module.js.map

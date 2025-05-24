@@ -258,20 +258,20 @@ pm2 monit  # 如果使用 PM2 管理进程
 npm install -g pm2
 
 # 启动服务
-pm2 start dist/main.js --name "liquidation-bot"
+pm2 start dist/main.js --name "bot"
 
 # 查看服务状态
 pm2 status
 
 # 查看日志
-pm2 logs liquidation-bot
+pm2 logs bot
 
 # 重启服务
-pm2 restart liquidation-bot
+pm2 restart bot
 
 # 停止服务
-pm2 stop liquidation-bot
+pm2 stop bot
 
 # 删除服务
-pm2 delete liquidation-bot
+pm2 delete bot
 ```

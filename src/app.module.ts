@@ -3,7 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ChainModule } from './chain/chain.module';
 import { BorrowDiscoveryModule } from './borrow-discovery/borrow-discovery.module';
-import { DatabaseService } from './database/database.service';
+import { DatabaseModule } from './database/database.module';
 
 @Module({
     imports: [
@@ -13,7 +13,7 @@ import { DatabaseService } from './database/database.service';
         ScheduleModule.forRoot(),
         ChainModule,
         BorrowDiscoveryModule,
+        DatabaseModule,
     ],
-    providers: [DatabaseService],
 })
 export class AppModule { } 

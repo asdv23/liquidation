@@ -25,6 +25,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
     private readonly MIN_WAIT_TIME: number; // 最小等待时间（毫秒）
     private readonly MAX_WAIT_TIME: number; // 最大等待时间（毫秒）
     private checkInterval: NodeJS.Timeout;
+    private heartbeatInterval: NodeJS.Timeout; // 心跳定时器
 
     constructor(
         private readonly chainService: ChainService,
@@ -40,6 +41,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         this.logger.log('BorrowDiscoveryService initializing...');
         await this.startListening();
         this.startHealthFactorChecker();
+        this.startHeartbeat(); // 启动心跳
     }
 
     private async startListening() {
@@ -162,6 +164,31 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         }, 60000); // 每分钟检查一次
     }
 
+    private startHeartbeat() {
+        // 启动时立即执行一次心跳
+        this.printHeartbeat();
+        // 每小时执行一次心跳
+        this.heartbeatInterval = setInterval(() => {
+            this.printHeartbeat();
+        }, 60 * 60 * 1000);
+    }
+
+    private printHeartbeat() {
+        const chains = this.chainService.getActiveChains();
+        const now = new Date().toISOString();
+
+        this.logger.log(`[${now}] 心跳检测 - 正在监听的合约：`);
+        chains.forEach(chainName => {
+            const config = this.chainService.getChainConfig(chainName);
+            this.logger.log(`[${chainName}] LendingPool: ${config.contracts.lendingPool}`);
+
+            // 输出当前活跃贷款数量
+            const activeLoansSet = this.activeLoans.get(chainName);
+            const activeLoansCount = activeLoansSet ? activeLoansSet.size : 0;
+            this.logger.log(`[${chainName}] 当前活跃贷款数量: ${activeLoansCount}`);
+        });
+    }
+
     private async checkHealthFactor(chainName: string, user: string, contract: ethers.Contract) {
         try {
             const accountData = await this.getUserAccountData(contract, user);
@@ -280,6 +307,9 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
     async onModuleDestroy() {
         if (this.checkInterval) {
             clearInterval(this.checkInterval);
+        }
+        if (this.heartbeatInterval) {
+            clearInterval(this.heartbeatInterval);
         }
     }
 } 

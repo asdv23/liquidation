@@ -12,6 +12,7 @@ const config_1 = require("@nestjs/config");
 const schedule_1 = require("@nestjs/schedule");
 const chain_module_1 = require("./chain/chain.module");
 const borrow_discovery_module_1 = require("./borrow-discovery/borrow-discovery.module");
+const database_module_1 = require("./database/database.module");
 let AppModule = class AppModule {
 };
 exports.AppModule = AppModule;
@@ -24,6 +25,7 @@ exports.AppModule = AppModule = __decorate([
             schedule_1.ScheduleModule.forRoot(),
             chain_module_1.ChainModule,
             borrow_discovery_module_1.BorrowDiscoveryModule,
+            database_module_1.DatabaseModule,
         ],
     })
 ], AppModule);
