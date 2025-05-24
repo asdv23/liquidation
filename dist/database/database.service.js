@@ -13,10 +13,13 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.DatabaseService = void 0;
 const common_1 = require("@nestjs/common");
 const client_1 = require("@prisma/client");
+const path = require("path");
 let DatabaseService = DatabaseService_1 = class DatabaseService {
     constructor() {
         this.logger = new common_1.Logger(DatabaseService_1.name);
         if (!DatabaseService_1.prisma) {
+            const dbPath = path.join(process.cwd(), 'prisma', 'dev.db');
+            this.logger.log(`Using SQLite database at: ${dbPath}`);
             DatabaseService_1.prisma = new client_1.PrismaClient();
         }
     }
@@ -215,6 +218,35 @@ let DatabaseService = DatabaseService_1 = class DatabaseService {
         }
         catch (error) {
             this.logger.error(`Error getting all tokens: ${error.message}`);
+            throw error;
+        }
+    }
+    async createOrUpdateLoan(chainName, user, totalDebt) {
+        try {
+            await this.prisma.loan.upsert({
+                where: {
+                    chainName_user: {
+                        chainName,
+                        user: user.toLowerCase(),
+                    },
+                },
+                update: {
+                    totalDebt,
+                    isActive: true,
+                    updatedAt: new Date(),
+                },
+                create: {
+                    chainName,
+                    user: user.toLowerCase(),
+                    totalDebt: 0,
+                    isActive: true,
+                    healthFactor: 0,
+                    nextCheckTime: new Date(),
+                },
+            });
+        }
+        catch (error) {
+            this.logger.error(`Error creating/updating loan: ${error.message}`);
             throw error;
         }
     }

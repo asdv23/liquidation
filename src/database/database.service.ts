@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
+import * as path from 'path';
 
 @Injectable()
 export class DatabaseService implements OnModuleInit {
@@ -8,6 +9,8 @@ export class DatabaseService implements OnModuleInit {
 
     constructor() {
         if (!DatabaseService.prisma) {
+            const dbPath = path.join(process.cwd(), 'prisma', 'dev.db');
+            this.logger.log(`Using SQLite database at: ${dbPath}`);
             DatabaseService.prisma = new PrismaClient();
         }
     }
@@ -230,6 +233,39 @@ export class DatabaseService implements OnModuleInit {
             });
         } catch (error) {
             this.logger.error(`Error getting all tokens: ${error.message}`);
+            throw error;
+        }
+    }
+
+    async createOrUpdateLoan(
+        chainName: string,
+        user: string,
+        totalDebt: number
+    ): Promise<void> {
+        try {
+            await this.prisma.loan.upsert({
+                where: {
+                    chainName_user: {
+                        chainName,
+                        user: user.toLowerCase(),
+                    },
+                },
+                update: {
+                    totalDebt,
+                    isActive: true,
+                    updatedAt: new Date(),
+                },
+                create: {
+                    chainName,
+                    user: user.toLowerCase(),
+                    totalDebt: 0, // 初始值，由健康因子检查线程更新
+                    isActive: true,
+                    healthFactor: 0, // 初始值，由健康因子检查线程更新
+                    nextCheckTime: new Date(), // 初始值，由健康因子检查线程更新
+                },
+            });
+        } catch (error) {
+            this.logger.error(`Error creating/updating loan: ${error.message}`);
             throw error;
         }
     }

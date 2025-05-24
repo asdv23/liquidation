@@ -151,57 +151,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
 
                     // 检查每个活跃借款的健康因子
                     for (const loan of activeLoans) {
-                        try {
-                            const accountData = await this.getUserAccountData(contract, loan.user);
-                            if (!accountData) {
-                                this.logger.warn(`[${chainName}] Could not get account data for user ${loan.user}`);
-                                continue;
-                            }
-
-                            const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
-                            const totalDebt = Number(ethers.formatUnits(accountData.totalDebtBase, 8));
-                            this.logger.log(`[${chainName}] User ${loan.user} health factor: ${healthFactor}, total debt: ${totalDebt.toFixed(2)} USD`);
-
-                            // 如果总债务为 0，关闭借款记录
-                            if (totalDebt === 0) {
-                                await this.databaseService.deactivateLoan(chainName, loan.user);
-                                this.logger.log(`[${chainName}] Deactivated loan for user ${loan.user} as total debt is 0`);
-                                continue;
-                            }
-
-                            // 计算下次检查的等待时间
-                            const waitTime = this.calculateWaitTime(healthFactor);
-                            const nextCheckTime = new Date(Date.now() + waitTime);
-                            const formattedDate = this.formatDate(nextCheckTime);
-
-                            // 更新数据库中的健康因子和下次检查时间
-                            await this.databaseService.updateLoanHealthFactor(
-                                chainName,
-                                loan.user,
-                                healthFactor,
-                                nextCheckTime,
-                                totalDebt
-                            );
-
-                            this.logger.log(`[${chainName}] Next check for user ${loan.user} in ${waitTime}ms (at ${formattedDate})`);
-
-                            // 如果健康因子低于清算阈值，执行清算
-                            if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
-                                await this.databaseService.markLiquidationDiscovered(chainName, loan.user);
-                                await this.executeLiquidation(chainName, loan.user, contract);
-                            }
-
-                            // 更新内存中的活跃贷款集合
-                            if (!this.activeLoans.has(chainName)) {
-                                this.activeLoans.set(chainName, new Set());
-                            }
-                            const activeLoansSet = this.activeLoans.get(chainName);
-                            if (activeLoansSet) {
-                                activeLoansSet.add(loan.user);
-                            }
-                        } catch (error) {
-                            this.logger.error(`[${chainName}] Error checking health factor for user ${loan.user}: ${error.message}`);
-                        }
+                        this.checkHealthFactor(chainName, loan.user, contract);
                     }
                 }
             }
@@ -283,28 +233,14 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                                 activeLoansSet.add(onBehalfOf);
                             }
 
-                            // 获取用户账户数据并创建/更新贷款记录
-                            const accountData = await this.getUserAccountData(contract, onBehalfOf);
-                            if (accountData) {
-                                const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
-                                const totalDebt = Number(ethers.formatUnits(accountData.totalDebtBase, 8));
-                                const waitTime = this.calculateWaitTime(healthFactor);
-                                const nextCheckTime = new Date(Date.now() + waitTime);
+                            // 创建贷款记录
+                            await this.databaseService.createOrUpdateLoan(
+                                chainName,
+                                onBehalfOf,
+                                0
+                            );
 
-                                await this.databaseService.updateLoanHealthFactor(
-                                    chainName,
-                                    onBehalfOf,
-                                    healthFactor,
-                                    nextCheckTime,
-                                    totalDebt
-                                );
-
-                                this.logger.log(`[${chainName}] Created/Updated loan record for user ${onBehalfOf}`);
-                                this.logger.log(`[${chainName}] Health factor: ${healthFactor}`);
-                                this.logger.log(`[${chainName}] Total debt: ${totalDebt.toFixed(2)} USD`);
-                            }
-
-                            await this.checkHealthFactor(chainName, onBehalfOf, contract);
+                            this.logger.log(`[${chainName}] Created/Updated loan record for user ${onBehalfOf}`);
                         } catch (error) {
                             this.logger.error(`[${chainName}] Error processing Borrow event: ${error.message}`);
                         }
@@ -327,51 +263,13 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                         this.logger.log(`- Use ATokens: ${useATokens}`);
                         this.logger.log(`- Transaction Hash: ${event?.transactionHash || event?.log?.transactionHash}`);
 
-                        // 获取用户账户数据
-                        const accountData = await this.getUserAccountData(contract, user);
-                        if (!accountData) {
-                            this.logger.warn(`[${chainName}] Could not get account data for user ${user}`);
-                            return;
-                        }
-
-                        const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
-                        const totalDebt = Number(ethers.formatUnits(accountData.totalDebtBase, 8));
-                        const waitTime = this.calculateWaitTime(healthFactor);
-                        const nextCheckTime = new Date(Date.now() + waitTime);
 
                         // 检查贷款记录是否存在
                         const activeLoans = await this.databaseService.getActiveLoans(chainName);
                         const loanExists = activeLoans.some(loan => loan.user.toLowerCase() === user.toLowerCase());
-
-                        if (loanExists) {
-                            // 更新数据库中的健康因子和下次检查时间
-                            await this.databaseService.updateLoanHealthFactor(
-                                chainName,
-                                user,
-                                healthFactor,
-                                nextCheckTime,
-                                totalDebt
-                            );
-
-                            this.logger.log(`[${chainName}] Updated loan record for user ${user}`);
-                            this.logger.log(`[${chainName}] Health factor: ${healthFactor}`);
-                            this.logger.log(`[${chainName}] Total debt: ${totalDebt.toFixed(2)} USD`);
-
-                            // 如果总债务为 0，关闭借款记录
-                            if (totalDebt === 0) {
-                                await this.databaseService.deactivateLoan(chainName, user);
-                                this.logger.log(`[${chainName}] Deactivated loan for user ${user} as total debt is 0`);
-
-                                // 从内存中移除该贷款
-                                const activeLoansSet = this.activeLoans.get(chainName);
-                                if (activeLoansSet) {
-                                    activeLoansSet.delete(user);
-                                }
-                            }
-                        } else {
+                        if (!loanExists) {
                             // 如果贷款记录不存在，记录告警
                             this.logger.warn(`[${chainName}] Received Repay event for non-existent loan: user=${user}, amount=${this.formatAmount(amount, tokenInfo.decimals)} ${tokenInfo.symbol}`);
-                            this.logger.warn(`[${chainName}] This might indicate a missed Borrow event or database inconsistency`);
                         }
                     } catch (error) {
                         this.logger.error(`[${chainName}] Error processing Repay event: ${error.message}`);
@@ -478,9 +376,6 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
 
     private printHeartbeat() {
         const chains = this.chainService.getActiveChains();
-        const now = new Date();
-        const formattedDate = this.formatDate(now);
-
         this.logger.log(`心跳检测 - 正在监听的合约：`);
         for (const chainName of chains) {
             const config = this.chainService.getChainConfig(chainName);
@@ -507,7 +402,14 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             this.logger.log(`[${chainName}] User ${user} health factor: ${healthFactor}`);
             this.logger.log(`[${chainName}] User ${user} total debt: ${totalDebt.toFixed(2)} USD`);
 
-            // 计算下次检查的等待时间（毫秒）
+            // 如果总债务等于 0，则关闭此用户借款
+            if (totalDebt === 0) {
+                await this.databaseService.deactivateLoan(chainName, user);
+                this.logger.log(`[${chainName}] Deactivated loan for user ${user} as total debt is 0`);
+                return;
+            }
+
+            // 否则，计算下次检查的等待时间（毫秒）
             const waitTime = this.calculateWaitTime(healthFactor);
             const nextCheckTime = new Date(Date.now() + waitTime);
             const formattedDate = this.formatDate(nextCheckTime);
@@ -525,9 +427,10 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
 
             // 如果健康因子低于清算阈值，执行清算
             if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
+                this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}`);
                 // 记录发现可清算的时间
-                await this.databaseService.markLiquidationDiscovered(chainName, user);
-                await this.executeLiquidation(chainName, user, contract);
+                // await this.databaseService.markLiquidationDiscovered(chainName, user);
+                // await this.executeLiquidation(chainName, user, contract);
                 return;
             }
 

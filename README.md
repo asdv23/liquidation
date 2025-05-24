@@ -227,6 +227,8 @@ npm run build
 # 4. 更新数据库
 npx prisma generate
 npx prisma db push
+# 查看 SQLite 数据库信息
+npx prisma studio
 
 # 5. 重启服务
 # 查找进程 ID

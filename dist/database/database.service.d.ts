@@ -119,4 +119,5 @@ export declare class DatabaseService implements OnModuleInit {
         address: string;
         decimals: number;
     }[]>;
+    createOrUpdateLoan(chainName: string, user: string, totalDebt: number): Promise<void>;
 }
