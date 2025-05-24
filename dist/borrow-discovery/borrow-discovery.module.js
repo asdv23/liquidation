@@ -6,25 +6,18 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
     return c > 3 && r && Object.defineProperty(target, key, r), r;
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.AppModule = void 0;
+exports.BorrowDiscoveryModule = void 0;
 const common_1 = require("@nestjs/common");
-const config_1 = require("@nestjs/config");
-const schedule_1 = require("@nestjs/schedule");
-const chain_module_1 = require("./chain/chain.module");
-const borrow_discovery_module_1 = require("./borrow-discovery/borrow-discovery.module");
-let AppModule = class AppModule {
+const borrow_discovery_service_1 = require("./borrow-discovery.service");
+const chain_module_1 = require("../chain/chain.module");
+let BorrowDiscoveryModule = class BorrowDiscoveryModule {
 };
-exports.AppModule = AppModule;
-exports.AppModule = AppModule = __decorate([
+exports.BorrowDiscoveryModule = BorrowDiscoveryModule;
+exports.BorrowDiscoveryModule = BorrowDiscoveryModule = __decorate([
     (0, common_1.Module)({
-        imports: [
-            config_1.ConfigModule.forRoot({
-                isGlobal: true,
-            }),
-            schedule_1.ScheduleModule.forRoot(),
-            chain_module_1.ChainModule,
-            borrow_discovery_module_1.BorrowDiscoveryModule,
-        ],
+        imports: [chain_module_1.ChainModule],
+        providers: [borrow_discovery_service_1.BorrowDiscoveryService],
+        exports: [borrow_discovery_service_1.BorrowDiscoveryService],
     })
-], AppModule);
-//# sourceMappingURL=app.module.js.map
+], BorrowDiscoveryModule);
+//# sourceMappingURL=borrow-discovery.module.js.map

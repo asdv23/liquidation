@@ -1,0 +1,31 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = env("DB_PROVIDER")
+  url      = env("DATABASE_URL")
+}
+
+model Loan {
+  id                 Int       @id @default(autoincrement())
+  chain              String    @db.VarChar(32)
+  userAddress        String    @db.VarChar(64)
+  borrowTxHash       String    @db.VarChar(66)
+  borrowTime         DateTime
+  repayTxHash        String?   @db.VarChar(66)
+  repayTime          DateTime?
+  liquidateTxHash    String?   @db.VarChar(66)
+  liquidateTime      DateTime?
+  lastHealthFactor   Decimal?  @db.Decimal(38, 18)
+  status             String    @db.VarChar(16)
+  healthHistory      LoanHealthHistory[]
+}
+
+model LoanHealthHistory {
+  id           Int      @id @default(autoincrement())
+  loan         Loan     @relation(fields: [loanId], references: [id])
+  loanId       Int
+  checkTime    DateTime
+  healthFactor Decimal  @db.Decimal(38, 18)
+} 
