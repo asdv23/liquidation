@@ -15,23 +15,48 @@ let ChainService = ChainService_1 = class ChainService {
     constructor() {
         this.logger = new common_1.Logger(ChainService_1.name);
         this.providers = new Map();
+        this.initializationPromise = null;
     }
-    onModuleInit() {
-        this.initializeProviders();
+    async onModuleInit() {
+        this.initializationPromise = this.initializeProviders();
+        await this.initializationPromise;
     }
-    initializeProviders() {
-        Object.entries(chains_config_1.chainsConfig).forEach(([chainName, config]) => {
-            try {
-                const provider = new ethers_1.ethers.JsonRpcProvider(config.rpcUrl);
-                this.providers.set(chainName, provider);
-                this.logger.log(`Initialized provider for ${chainName}`);
-            }
-            catch (error) {
-                this.logger.error(`Failed to initialize provider for ${chainName}: ${error.message}`);
-            }
-        });
+    async initializeProviders() {
+        this.logger.log('Initializing providers...');
+        const initPromises = Object.entries(chains_config_1.chainsConfig).map(([chainName, config]) => this.initializeProvider(chainName, config));
+        await Promise.all(initPromises);
+        this.logger.log('Providers initialized.');
     }
-    getProvider(chainName) {
+    async initializeProvider(chainName, config) {
+        try {
+            const wsUrl = config.rpcUrl.replace('https://', 'wss://');
+            const provider = new ethers_1.ethers.WebSocketProvider(wsUrl);
+            await provider.getNetwork();
+            this.logger.log(`Network detected for ${chainName}`);
+            const ws = provider.websocket;
+            ws.on('error', (error) => {
+                this.logger.error(`WebSocket error for ${chainName}: ${error.message}`);
+            });
+            ws.on('close', () => {
+                this.logger.warn(`WebSocket connection closed for ${chainName}, attempting to reconnect...`);
+                setTimeout(() => {
+                    this.initializeProvider(chainName, config);
+                }, 5000);
+            });
+            this.providers.set(chainName, provider);
+            this.logger.log(`Initialized provider for ${chainName} at ${wsUrl}`);
+        }
+        catch (error) {
+            this.logger.error(`Failed to initialize provider for ${chainName}: ${error.message}`);
+            setTimeout(() => {
+                this.initializeProvider(chainName, config);
+            }, 5000);
+        }
+    }
+    async getProvider(chainName) {
+        if (this.initializationPromise) {
+            await this.initializationPromise;
+        }
         const provider = this.providers.get(chainName);
         if (!provider) {
             throw new Error(`Provider for chain ${chainName} not found`);

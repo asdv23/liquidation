@@ -3,22 +3,22 @@ generator client {
 }
 
 datasource db {
-  provider = env("DB_PROVIDER")
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
 model Loan {
   id                 Int       @id @default(autoincrement())
-  chain              String    @db.VarChar(32)
-  userAddress        String    @db.VarChar(64)
-  borrowTxHash       String    @db.VarChar(66)
+  chain              String
+  userAddress        String
+  borrowTxHash       String
   borrowTime         DateTime
-  repayTxHash        String?   @db.VarChar(66)
+  repayTxHash        String?
   repayTime          DateTime?
-  liquidateTxHash    String?   @db.VarChar(66)
+  liquidateTxHash    String?
   liquidateTime      DateTime?
-  lastHealthFactor   Decimal?  @db.Decimal(38, 18)
-  status             String    @db.VarChar(16)
+  lastHealthFactor   Decimal?
+  status             String
   healthHistory      LoanHealthHistory[]
 }
 
@@ -27,5 +27,5 @@ model LoanHealthHistory {
   loan         Loan     @relation(fields: [loanId], references: [id])
   loanId       Int
   checkTime    DateTime
-  healthFactor Decimal  @db.Decimal(38, 18)
+  healthFactor Decimal
 } 

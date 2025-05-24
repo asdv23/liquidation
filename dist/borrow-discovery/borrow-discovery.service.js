@@ -12,111 +12,110 @@ var BorrowDiscoveryService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BorrowDiscoveryService = void 0;
 const common_1 = require("@nestjs/common");
-const ethers_1 = require("ethers");
 const chain_service_1 = require("../chain/chain.service");
-const fs = require("fs");
-const path = require("path");
+const ethers_1 = require("ethers");
 let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoveryService {
     constructor(chainService) {
         this.chainService = chainService;
         this.logger = new common_1.Logger(BorrowDiscoveryService_1.name);
-        this.unsafeLoans = new Map();
         this.activeLoans = new Map();
         this.liquidationTimes = new Map();
-        this.aaveV3PoolABI = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'abis/AAVE_V3_POOL.json'), 'utf8'));
-        this.pollingInterval = parseInt(process.env.POLLING_INTERVAL || '300000', 10);
     }
     async onModuleInit() {
+        this.logger.log('BorrowDiscoveryService initializing...');
         await this.startListening();
-        this.startHealthFactorPolling();
     }
     async startListening() {
         const chains = this.chainService.getActiveChains();
-        for (const chain of chains) {
-            const provider = this.chainService.getProvider(chain);
-            const config = this.chainService.getChainConfig(chain);
-            const contractAddress = config.contracts.lendingPool;
-            const contract = new ethers_1.ethers.Contract(contractAddress, this.aaveV3PoolABI, provider);
-            contract.on('Borrow', async (reserve, user, onBehalfOf, amount, interestRateMode, borrowRate, referral, event) => {
-                this.logger.log(`[${chain}] New borrow detected: user=${onBehalfOf}, amount=${ethers_1.ethers.formatEther(amount)}`);
-                if (!this.activeLoans.has(chain)) {
-                    this.activeLoans.set(chain, new Set());
+        this.logger.log(`Starting to listen on chains: ${chains.join(', ')}`);
+        for (const chainName of chains) {
+            try {
+                const provider = await this.chainService.getProvider(chainName);
+                const config = this.chainService.getChainConfig(chainName);
+                const currentBlock = await provider.getBlockNumber();
+                this.logger.log(`[${chainName}] Current block number: ${currentBlock}`);
+                const code = await provider.getCode(config.contracts.lendingPool);
+                if (code === '0x') {
+                    this.logger.error(`[${chainName}] No contract code found at address ${config.contracts.lendingPool}`);
+                    continue;
                 }
-                const activeLoansSet = this.activeLoans.get(chain);
-                if (activeLoansSet) {
-                    activeLoansSet.add(onBehalfOf);
+                this.logger.log(`[${chainName}] Contract code found at ${config.contracts.lendingPool}`);
+                const contract = new ethers_1.ethers.Contract(config.contracts.lendingPool, [
+                    'event Borrow(address indexed user, address indexed onBehalfOf, uint256 amount, uint256 interestRateMode, uint256 borrowRate, uint16 indexed referral)',
+                    'event Repay(address indexed user, address indexed repayer, uint256 amount, bool useATokens)',
+                    'event LiquidationCall(address indexed collateralAsset, address indexed debtAsset, address indexed user, uint256 debtToCover, uint256 liquidatedCollateralAmount, address liquidator, bool receiveAToken)',
+                    'function getAddressesProvider() view returns (address)',
+                    'function getReserveData(address asset) view returns (tuple(uint256 configuration, uint128 liquidityIndex, uint128 currentLiquidityRate, uint128 variableBorrowIndex, uint128 currentVariableBorrowRate, uint128 currentStableBorrowRate, uint40 lastUpdateTimestamp, uint16 id, address aTokenAddress, address stableDebtTokenAddress, address variableDebtTokenAddress, address interestRateStrategyAddress, uint128 accruedToTreasury, uint128 unbacked, uint128 isolationModeTotalDebt))'
+                ], provider);
+                try {
+                    const wethAddress = chainName === 'base'
+                        ? '0x4200000000000000000000000000000000000006'
+                        : '0x4200000000000000000000000000000000000006';
+                    const reserveData = await contract.getReserveData(wethAddress);
+                    this.logger.log(`[${chainName}] Successfully connected to Aave V3 Pool at ${config.contracts.lendingPool}`);
+                    this.logger.log(`[${chainName}] WETH Reserve Data:`);
+                    this.logger.log(`- Current Liquidity Rate: ${ethers_1.ethers.formatUnits(reserveData.currentLiquidityRate, 27)}`);
+                    this.logger.log(`- Current Variable Borrow Rate: ${ethers_1.ethers.formatUnits(reserveData.currentVariableBorrowRate, 27)}`);
+                    this.logger.log(`- Current Stable Borrow Rate: ${ethers_1.ethers.formatUnits(reserveData.currentStableBorrowRate, 27)}`);
                 }
-                await this.checkHealthFactor(chain, onBehalfOf, contract);
-            });
-            contract.on('Repay', async (reserve, user, repayer, amount, useATokens, event) => {
-                this.logger.log(`[${chain}] Repay detected: user=${user}, amount=${ethers_1.ethers.formatEther(amount)}`);
-                const activeLoansSet = this.activeLoans.get(chain);
-                if (activeLoansSet) {
-                    activeLoansSet.delete(user);
+                catch (error) {
+                    this.logger.error(`[${chainName}] Failed to verify contract connection: ${error.message}`);
+                    continue;
                 }
-            });
-            contract.on('LiquidationCall', async (collateralAsset, debtAsset, user, debtToCover, liquidatedCollateralAmount, liquidator, receiveAToken, event) => {
-                this.logger.log(`[${chain}] Liquidation detected: user=${user}, liquidator=${liquidator}`);
-                const activeLoansSet = this.activeLoans.get(chain);
-                if (activeLoansSet) {
-                    activeLoansSet.delete(user);
-                }
-                this.recordLiquidationTime(chain, user);
-            });
-            this.logger.log(`Started listening for events on ${chain} at ${contractAddress}`);
+                contract.on('Borrow', async (user, onBehalfOf, amount, interestRateMode, borrowRate, referral, event) => {
+                    this.logger.log(`[${chainName}] Borrow event detected: user=${user}, amount=${ethers_1.ethers.formatEther(amount)} ETH`);
+                    if (!this.activeLoans.has(chainName)) {
+                        this.activeLoans.set(chainName, new Set());
+                    }
+                    const activeLoansSet = this.activeLoans.get(chainName);
+                    if (activeLoansSet) {
+                        activeLoansSet.add(onBehalfOf);
+                    }
+                    await this.checkHealthFactor(chainName, onBehalfOf, contract);
+                });
+                contract.on('Repay', async (user, repayer, amount, useATokens, event) => {
+                    this.logger.log(`[${chainName}] Repay event detected: user=${user}, amount=${ethers_1.ethers.formatEther(amount)} ETH`);
+                    const activeLoansSet = this.activeLoans.get(chainName);
+                    if (activeLoansSet) {
+                        activeLoansSet.delete(user);
+                    }
+                });
+                contract.on('LiquidationCall', async (collateralAsset, debtAsset, user, debtToCover, liquidatedCollateralAmount, liquidator, receiveAToken, event) => {
+                    this.logger.log(`[${chainName}] LiquidationCall event detected:`);
+                    this.logger.log(`- User: ${user}`);
+                    this.logger.log(`- Debt to Cover: ${ethers_1.ethers.formatEther(debtToCover)} ETH`);
+                    this.logger.log(`- Liquidated Amount: ${ethers_1.ethers.formatEther(liquidatedCollateralAmount)} ETH`);
+                    this.logger.log(`- Liquidator: ${liquidator}`);
+                    const activeLoansSet = this.activeLoans.get(chainName);
+                    if (activeLoansSet) {
+                        activeLoansSet.delete(user);
+                    }
+                    this.recordLiquidationTime(chainName, user);
+                });
+                this.logger.log(`[${chainName}] Successfully set up event listeners and verified contract connection`);
+            }
+            catch (error) {
+                this.logger.error(`Failed to set up event listeners for ${chainName}: ${error.message}`);
+            }
         }
     }
-    async checkHealthFactor(chain, userAddress, contract) {
+    async checkHealthFactor(chainName, user, contract) {
         try {
-            const userData = await contract.getUserAccountData(userAddress);
-            const healthFactor = ethers_1.ethers.formatUnits(userData.healthFactor, 18);
-            this.logger.log(`[${chain}] User ${userAddress} health factor: ${healthFactor}`);
-            if (Number(healthFactor) < 1) {
-                this.logger.warn(`[${chain}] Unsafe loan detected for user ${userAddress} with health factor ${healthFactor}`);
-                if (!this.unsafeLoans.has(chain)) {
-                    this.unsafeLoans.set(chain, []);
-                }
-                const unsafeLoansList = this.unsafeLoans.get(chain);
-                if (unsafeLoansList) {
-                    unsafeLoansList.push({ user: userAddress, healthFactor, timestamp: new Date().toISOString() });
-                }
-            }
+            const healthFactor = await contract.getUserAccountData(user);
+            this.logger.log(`[${chainName}] Health factor for user ${user}: ${ethers_1.ethers.formatUnits(healthFactor.healthFactor, 18)}`);
         }
         catch (error) {
-            this.logger.error(`[${chain}] Error checking health factor for user ${userAddress}: ${error.message}`);
+            this.logger.error(`Failed to check health factor for user ${user} on ${chainName}: ${error.message}`);
         }
     }
-    startHealthFactorPolling() {
-        setInterval(async () => {
-            const chains = this.chainService.getActiveChains();
-            for (const chain of chains) {
-                const provider = this.chainService.getProvider(chain);
-                const config = this.chainService.getChainConfig(chain);
-                const contractAddress = config.contracts.lendingPool;
-                const contract = new ethers_1.ethers.Contract(contractAddress, this.aaveV3PoolABI, provider);
-                const activeLoansSet = this.activeLoans.get(chain);
-                if (activeLoansSet) {
-                    for (const user of activeLoansSet) {
-                        await this.checkHealthFactor(chain, user, contract);
-                    }
-                }
-            }
-        }, this.pollingInterval);
-    }
-    recordLiquidationTime(chain, user) {
-        if (!this.liquidationTimes.has(chain)) {
-            this.liquidationTimes.set(chain, []);
+    recordLiquidationTime(chainName, user) {
+        if (!this.liquidationTimes.has(chainName)) {
+            this.liquidationTimes.set(chainName, new Map());
         }
-        const liquidationTimesList = this.liquidationTimes.get(chain);
-        if (liquidationTimesList) {
-            liquidationTimesList.push({ user, timestamp: new Date().toISOString() });
+        const chainLiquidationTimes = this.liquidationTimes.get(chainName);
+        if (chainLiquidationTimes) {
+            chainLiquidationTimes.set(user, Date.now());
         }
-    }
-    getUnsafeLoans(chain) {
-        return this.unsafeLoans.get(chain) || [];
-    }
-    getLiquidationTimes(chain) {
-        return this.liquidationTimes.get(chain) || [];
     }
 };
 exports.BorrowDiscoveryService = BorrowDiscoveryService;
