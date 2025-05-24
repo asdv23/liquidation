@@ -1,56 +1,74 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 
 @Injectable()
-export class DatabaseService {
+export class DatabaseService implements OnModuleInit {
     private readonly logger = new Logger(DatabaseService.name);
-    private prisma: PrismaClient;
+    private static prisma: PrismaClient;
 
     constructor() {
-        this.prisma = new PrismaClient();
+        if (!DatabaseService.prisma) {
+            DatabaseService.prisma = new PrismaClient();
+        }
+    }
+
+    async onModuleInit() {
+        try {
+            await DatabaseService.prisma.$connect();
+            this.logger.log('Database connection established');
+        } catch (error) {
+            this.logger.error(`Failed to connect to database: ${error.message}`);
+            throw error;
+        }
+    }
+
+    get prisma() {
+        return DatabaseService.prisma;
     }
 
     async updateLoanHealthFactor(
         chainName: string,
         user: string,
         healthFactor: number,
-        nextCheckTime: Date
-    ) {
-        try {
-            return await this.prisma.loan.upsert({
-                where: {
-                    chainName_user: {
-                        chainName,
-                        user,
-                    },
-                },
-                update: {
-                    healthFactor,
-                    lastCheckTime: new Date(),
-                    nextCheckTime,
-                    isActive: true,
-                },
-                create: {
-                    chainName,
-                    user,
-                    healthFactor,
-                    nextCheckTime,
-                    isActive: true,
-                },
-            });
-        } catch (error) {
-            this.logger.error(`Error updating loan health factor: ${error.message}`);
-            throw error;
-        }
+        nextCheckTime: Date,
+        totalDebt: number
+    ): Promise<void> {
+        await this.prisma.loan.updateMany({
+            where: {
+                chainName,
+                user: user.toLowerCase(),
+                isActive: true
+            },
+            data: {
+                healthFactor,
+                lastCheckTime: new Date(),
+                nextCheckTime,
+                totalDebt
+            }
+        });
     }
 
     async markLiquidationDiscovered(chainName: string, user: string) {
         try {
+            // 检查是否存在贷款记录
+            const existingLoan = await this.prisma.loan.findFirst({
+                where: {
+                    chainName,
+                    user: user.toLowerCase(),
+                },
+            });
+
+            if (!existingLoan) {
+                this.logger.warn(`[${chainName}] No active loan found for user ${user} when marking liquidation discovered`);
+                return;
+            }
+
+            // 更新清算发现时间
             return await this.prisma.loan.update({
                 where: {
                     chainName_user: {
                         chainName,
-                        user,
+                        user: user.toLowerCase(),
                     },
                 },
                 data: {
@@ -109,11 +127,12 @@ export class DatabaseService {
         }
     }
 
-    async getActiveLoans() {
+    async getActiveLoans(chainName?: string) {
         try {
             return await this.prisma.loan.findMany({
                 where: {
                     isActive: true,
+                    ...(chainName ? { chainName } : {}),
                 },
                 orderBy: {
                     nextCheckTime: 'asc',
@@ -156,6 +175,61 @@ export class DatabaseService {
             });
         } catch (error) {
             this.logger.error(`Error getting loans to check: ${error.message}`);
+            throw error;
+        }
+    }
+
+    // Token 相关方法
+    async getToken(chainName: string, address: string) {
+        try {
+            return await this.prisma.token.findUnique({
+                where: {
+                    chainName_address: {
+                        chainName,
+                        address: address.toLowerCase(),
+                    },
+                },
+            });
+        } catch (error) {
+            this.logger.error(`Error getting token: ${error.message}`);
+            throw error;
+        }
+    }
+
+    async saveToken(chainName: string, address: string, symbol: string, decimals: number) {
+        try {
+            return await this.prisma.token.upsert({
+                where: {
+                    chainName_address: {
+                        chainName,
+                        address: address.toLowerCase(),
+                    },
+                },
+                update: {
+                    symbol,
+                    decimals,
+                    updatedAt: new Date(),
+                },
+                create: {
+                    chainName,
+                    address: address.toLowerCase(),
+                    symbol,
+                    decimals,
+                },
+            });
+        } catch (error) {
+            this.logger.error(`Error saving token: ${error.message}`);
+            throw error;
+        }
+    }
+
+    async getAllTokens(chainName?: string) {
+        try {
+            return await this.prisma.token.findMany({
+                where: chainName ? { chainName } : undefined,
+            });
+        } catch (error) {
+            this.logger.error(`Error getting all tokens: ${error.message}`);
             throw error;
         }
     }

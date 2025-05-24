@@ -16,44 +16,55 @@ const client_1 = require("@prisma/client");
 let DatabaseService = DatabaseService_1 = class DatabaseService {
     constructor() {
         this.logger = new common_1.Logger(DatabaseService_1.name);
-        this.prisma = new client_1.PrismaClient();
+        if (!DatabaseService_1.prisma) {
+            DatabaseService_1.prisma = new client_1.PrismaClient();
+        }
     }
-    async updateLoanHealthFactor(chainName, user, healthFactor, nextCheckTime) {
+    async onModuleInit() {
         try {
-            return await this.prisma.loan.upsert({
-                where: {
-                    chainName_user: {
-                        chainName,
-                        user,
-                    },
-                },
-                update: {
-                    healthFactor,
-                    lastCheckTime: new Date(),
-                    nextCheckTime,
-                    isActive: true,
-                },
-                create: {
-                    chainName,
-                    user,
-                    healthFactor,
-                    nextCheckTime,
-                    isActive: true,
-                },
-            });
+            await DatabaseService_1.prisma.$connect();
+            this.logger.log('Database connection established');
         }
         catch (error) {
-            this.logger.error(`Error updating loan health factor: ${error.message}`);
+            this.logger.error(`Failed to connect to database: ${error.message}`);
             throw error;
         }
     }
+    get prisma() {
+        return DatabaseService_1.prisma;
+    }
+    async updateLoanHealthFactor(chainName, user, healthFactor, nextCheckTime, totalDebt) {
+        await this.prisma.loan.updateMany({
+            where: {
+                chainName,
+                user: user.toLowerCase(),
+                isActive: true
+            },
+            data: {
+                healthFactor,
+                lastCheckTime: new Date(),
+                nextCheckTime,
+                totalDebt
+            }
+        });
+    }
     async markLiquidationDiscovered(chainName, user) {
         try {
+            const existingLoan = await this.prisma.loan.findFirst({
+                where: {
+                    chainName,
+                    user: user.toLowerCase(),
+                },
+            });
+            if (!existingLoan) {
+                this.logger.warn(`[${chainName}] No active loan found for user ${user} when marking liquidation discovered`);
+                return;
+            }
             return await this.prisma.loan.update({
                 where: {
                     chainName_user: {
                         chainName,
-                        user,
+                        user: user.toLowerCase(),
                     },
                 },
                 data: {
@@ -104,12 +115,10 @@ let DatabaseService = DatabaseService_1 = class DatabaseService {
             throw error;
         }
     }
-    async getActiveLoans() {
+    async getActiveLoans(chainName) {
         try {
             return await this.prisma.loan.findMany({
-                where: {
-                    isActive: true,
-                },
+                where: Object.assign({ isActive: true }, (chainName ? { chainName } : {})),
                 orderBy: {
                     nextCheckTime: 'asc',
                 },
@@ -152,6 +161,60 @@ let DatabaseService = DatabaseService_1 = class DatabaseService {
         }
         catch (error) {
             this.logger.error(`Error getting loans to check: ${error.message}`);
+            throw error;
+        }
+    }
+    async getToken(chainName, address) {
+        try {
+            return await this.prisma.token.findUnique({
+                where: {
+                    chainName_address: {
+                        chainName,
+                        address: address.toLowerCase(),
+                    },
+                },
+            });
+        }
+        catch (error) {
+            this.logger.error(`Error getting token: ${error.message}`);
+            throw error;
+        }
+    }
+    async saveToken(chainName, address, symbol, decimals) {
+        try {
+            return await this.prisma.token.upsert({
+                where: {
+                    chainName_address: {
+                        chainName,
+                        address: address.toLowerCase(),
+                    },
+                },
+                update: {
+                    symbol,
+                    decimals,
+                    updatedAt: new Date(),
+                },
+                create: {
+                    chainName,
+                    address: address.toLowerCase(),
+                    symbol,
+                    decimals,
+                },
+            });
+        }
+        catch (error) {
+            this.logger.error(`Error saving token: ${error.message}`);
+            throw error;
+        }
+    }
+    async getAllTokens(chainName) {
+        try {
+            return await this.prisma.token.findMany({
+                where: chainName ? { chainName } : undefined,
+            });
+        }
+        catch (error) {
+            this.logger.error(`Error getting all tokens: ${error.message}`);
             throw error;
         }
     }

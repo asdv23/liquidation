@@ -9,6 +9,7 @@ export declare class BorrowDiscoveryService implements OnModuleInit, OnModuleDes
     private readonly logger;
     private activeLoans;
     private liquidationTimes;
+    private tokenCache;
     private readonly LIQUIDATION_THRESHOLD;
     private readonly CRITICAL_THRESHOLD;
     private readonly HEALTH_FACTOR_THRESHOLD;
@@ -18,9 +19,14 @@ export declare class BorrowDiscoveryService implements OnModuleInit, OnModuleDes
     private heartbeatInterval;
     constructor(chainService: ChainService, configService: ConfigService, databaseService: DatabaseService);
     onModuleInit(): Promise<void>;
+    private loadTokenCache;
+    private getTokenInfo;
+    private formatAmount;
+    private loadActiveLoans;
     private startListening;
     private startHealthFactorChecker;
     private startHeartbeat;
+    private formatDate;
     private printHeartbeat;
     private checkHealthFactor;
     private getUserAccountData;

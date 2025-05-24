@@ -4,7 +4,7 @@ generator client {
 
 datasource db {
   provider = "sqlite"
-  url      = env("DATABASE_URL")
+  url      = "file:./dev.db"
 }
 
 model Loan {
@@ -22,9 +22,11 @@ model Loan {
   liquidationTime DateTime? // 清算时间
   liquidator String? // 清算人地址
   liquidationDelay Int? // 从发现到清算的延迟（毫秒）
+  totalDebt Decimal @default(0)
   healthHistory LoanHealthHistory[] // 添加反向关系
 
   @@unique([chainName, user])
+  @@index([chainName, isActive])
   @@index([healthFactor])
   @@index([nextCheckTime])
 }
@@ -35,4 +37,17 @@ model LoanHealthHistory {
   loanId       Int
   checkTime    DateTime
   healthFactor Decimal
+}
+
+model Token {
+  id        Int      @id @default(autoincrement())
+  chainName String   // 链名称
+  address   String   // token 地址
+  symbol    String   // token 符号
+  decimals  Int      // token 精度
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([chainName, address])
+  @@index([chainName])
 } 

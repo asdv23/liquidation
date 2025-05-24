@@ -4,6 +4,8 @@ import { ethers } from 'ethers';
 import { ChainConfig } from '../interfaces/chain-config.interface';
 import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '../database/database.service';
+import * as fs from 'fs';
+import * as path from 'path';
 
 interface UserAccountData {
     totalCollateralBase: bigint;
@@ -14,11 +16,17 @@ interface UserAccountData {
     healthFactor: bigint;
 }
 
+interface TokenInfo {
+    symbol: string;
+    decimals: number;
+}
+
 @Injectable()
 export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
     private readonly logger = new Logger(BorrowDiscoveryService.name);
     private activeLoans: Map<string, Set<string>> = new Map();
     private liquidationTimes: Map<string, Map<string, number>> = new Map();
+    private tokenCache: Map<string, Map<string, TokenInfo>> = new Map();
     private readonly LIQUIDATION_THRESHOLD = 1.05; // 清算阈值
     private readonly CRITICAL_THRESHOLD = 1.1; // 危险阈值
     private readonly HEALTH_FACTOR_THRESHOLD = 1.2; // 健康阈值
@@ -39,9 +47,167 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
 
     async onModuleInit() {
         this.logger.log('BorrowDiscoveryService initializing...');
+        await this.loadTokenCache();
+        await this.loadActiveLoans();
         await this.startListening();
         this.startHealthFactorChecker();
-        this.startHeartbeat(); // 启动心跳
+        this.startHeartbeat();
+    }
+
+    private async loadTokenCache() {
+        try {
+            const tokens = await this.databaseService.getAllTokens();
+            for (const token of tokens) {
+                if (!this.tokenCache.has(token.chainName)) {
+                    this.tokenCache.set(token.chainName, new Map());
+                }
+                const chainTokens = this.tokenCache.get(token.chainName)!;
+                chainTokens.set(token.address.toLowerCase(), {
+                    symbol: token.symbol,
+                    decimals: token.decimals,
+                });
+            }
+            this.logger.log(`Loaded ${tokens.length} tokens into cache`);
+        } catch (error) {
+            this.logger.error(`Error loading token cache: ${error.message}`);
+        }
+    }
+
+    private async getTokenInfo(chainName: string, address: string, provider: ethers.Provider): Promise<TokenInfo> {
+        const normalizedAddress = address.toLowerCase();
+
+        // 检查缓存
+        const chainTokens = this.tokenCache.get(chainName);
+        if (chainTokens?.has(normalizedAddress)) {
+            return chainTokens.get(normalizedAddress)!;
+        }
+
+        // 检查数据库
+        const dbToken = await this.databaseService.getToken(chainName, normalizedAddress);
+        if (dbToken) {
+            // 更新缓存
+            if (!this.tokenCache.has(chainName)) {
+                this.tokenCache.set(chainName, new Map());
+            }
+            const tokenInfo = {
+                symbol: dbToken.symbol,
+                decimals: dbToken.decimals,
+            };
+            this.tokenCache.get(chainName)!.set(normalizedAddress, tokenInfo);
+            return tokenInfo;
+        }
+
+        // 查询链上数据
+        try {
+            const erc20Abi = [
+                'function symbol() view returns (string)',
+                'function decimals() view returns (uint8)',
+            ];
+            const contract = new ethers.Contract(normalizedAddress, erc20Abi, provider);
+            const [symbol, decimals] = await Promise.all([
+                contract.symbol(),
+                contract.decimals(),
+            ]);
+
+            // 保存到数据库和缓存
+            await this.databaseService.saveToken(chainName, normalizedAddress, symbol, Number(decimals));
+            if (!this.tokenCache.has(chainName)) {
+                this.tokenCache.set(chainName, new Map());
+            }
+            const tokenInfo = { symbol, decimals: Number(decimals) };
+            this.tokenCache.get(chainName)!.set(normalizedAddress, tokenInfo);
+            return tokenInfo;
+        } catch (error) {
+            this.logger.error(`Error getting token info for ${normalizedAddress} on ${chainName}: ${error.message}`);
+            // 如果查询失败，返回默认值
+            return { symbol: 'UNKNOWN', decimals: 18 };
+        }
+    }
+
+    private formatAmount(amount: bigint, decimals: number): string {
+        return Number(ethers.formatUnits(amount, decimals)).toFixed(6);
+    }
+
+    private async loadActiveLoans() {
+        try {
+            const chains = this.chainService.getActiveChains();
+            for (const chainName of chains) {
+                const activeLoans = await this.databaseService.getActiveLoans(chainName);
+                this.logger.log(`[${chainName}] Found ${activeLoans.length} active loans in database`);
+
+                if (activeLoans.length > 0) {
+                    this.logger.log(`[${chainName}] Checking health factors for ${activeLoans.length} active loans...`);
+
+                    // 获取合约实例
+                    const provider = await this.chainService.getProvider(chainName);
+                    const config = this.chainService.getChainConfig(chainName);
+                    const abiPath = path.join(process.cwd(), 'abi', `${chainName.toUpperCase()}_AAVE_V3_POOL_ABI.json`);
+                    const abi = JSON.parse(fs.readFileSync(abiPath, 'utf8'));
+                    const contract = new ethers.Contract(
+                        config.contracts.lendingPool,
+                        abi,
+                        provider
+                    );
+
+                    // 检查每个活跃借款的健康因子
+                    for (const loan of activeLoans) {
+                        try {
+                            const accountData = await this.getUserAccountData(contract, loan.user);
+                            if (!accountData) {
+                                this.logger.warn(`[${chainName}] Could not get account data for user ${loan.user}`);
+                                continue;
+                            }
+
+                            const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
+                            const totalDebt = Number(ethers.formatUnits(accountData.totalDebtBase, 8));
+                            this.logger.log(`[${chainName}] User ${loan.user} health factor: ${healthFactor}, total debt: ${totalDebt.toFixed(2)} USD`);
+
+                            // 如果总债务为 0，关闭借款记录
+                            if (totalDebt === 0) {
+                                await this.databaseService.deactivateLoan(chainName, loan.user);
+                                this.logger.log(`[${chainName}] Deactivated loan for user ${loan.user} as total debt is 0`);
+                                continue;
+                            }
+
+                            // 计算下次检查的等待时间
+                            const waitTime = this.calculateWaitTime(healthFactor);
+                            const nextCheckTime = new Date(Date.now() + waitTime);
+                            const formattedDate = this.formatDate(nextCheckTime);
+
+                            // 更新数据库中的健康因子和下次检查时间
+                            await this.databaseService.updateLoanHealthFactor(
+                                chainName,
+                                loan.user,
+                                healthFactor,
+                                nextCheckTime,
+                                totalDebt
+                            );
+
+                            this.logger.log(`[${chainName}] Next check for user ${loan.user} in ${waitTime}ms (at ${formattedDate})`);
+
+                            // 如果健康因子低于清算阈值，执行清算
+                            if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
+                                await this.databaseService.markLiquidationDiscovered(chainName, loan.user);
+                                await this.executeLiquidation(chainName, loan.user, contract);
+                            }
+
+                            // 更新内存中的活跃贷款集合
+                            if (!this.activeLoans.has(chainName)) {
+                                this.activeLoans.set(chainName, new Set());
+                            }
+                            const activeLoansSet = this.activeLoans.get(chainName);
+                            if (activeLoansSet) {
+                                activeLoansSet.add(loan.user);
+                            }
+                        } catch (error) {
+                            this.logger.error(`[${chainName}] Error checking health factor for user ${loan.user}: ${error.message}`);
+                        }
+                    }
+                }
+            }
+        } catch (error) {
+            this.logger.error(`Error loading active loans: ${error.message}`);
+        }
     }
 
     private async startListening() {
@@ -52,6 +218,10 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             try {
                 const provider = await this.chainService.getProvider(chainName);
                 const config = this.chainService.getChainConfig(chainName);
+
+                // 读取对应链的 ABI 文件
+                const abiPath = path.join(process.cwd(), 'abi', `${chainName.toUpperCase()}_AAVE_V3_POOL_ABI.json`);
+                const abi = JSON.parse(fs.readFileSync(abiPath, 'utf8'));
 
                 // 获取当前区块高度
                 const currentBlock = await provider.getBlockNumber();
@@ -67,13 +237,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
 
                 const contract = new ethers.Contract(
                     config.contracts.lendingPool,
-                    [
-                        'event Borrow(address indexed user, address indexed onBehalfOf, uint256 amount, uint256 interestRateMode, uint256 borrowRate, uint16 indexed referral)',
-                        'event Repay(address indexed user, address indexed repayer, uint256 amount, bool useATokens)',
-                        'event LiquidationCall(address indexed collateralAsset, address indexed debtAsset, address indexed user, uint256 debtToCover, uint256 liquidatedCollateralAmount, address liquidator, bool receiveAToken)',
-                        'function getAddressesProvider() view returns (address)',
-                        'function getReserveData(address asset) view returns (tuple(uint256 configuration, uint128 liquidityIndex, uint128 currentLiquidityRate, uint128 variableBorrowIndex, uint128 currentVariableBorrowRate, uint128 currentStableBorrowRate, uint40 lastUpdateTimestamp, uint16 id, address aTokenAddress, address stableDebtTokenAddress, address variableDebtTokenAddress, address interestRateStrategyAddress, uint128 accruedToTreasury, uint128 unbacked, uint128 isolationModeTotalDebt))'
-                    ],
+                    abi,
                     provider as ethers.ContractRunner
                 );
 
@@ -96,42 +260,171 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 }
 
                 // 监听 Borrow 事件
-                contract.on('Borrow', async (user, onBehalfOf, amount, interestRateMode, borrowRate, referral, event) => {
-                    this.logger.log(`[${chainName}] Borrow event detected: user=${user}, amount=${ethers.formatEther(amount)} ETH`);
-                    if (!this.activeLoans.has(chainName)) {
-                        this.activeLoans.set(chainName, new Set());
-                    }
-                    const activeLoansSet = this.activeLoans.get(chainName);
-                    if (activeLoansSet) {
-                        activeLoansSet.add(onBehalfOf);
-                    }
-                    await this.checkHealthFactor(chainName, onBehalfOf, contract);
-                });
+                this.logger.log(`[${chainName}] Setting up Borrow event listener...`);
+                try {
+                    contract.on('Borrow', async (reserve, user, onBehalfOf, amount, interestRateMode, borrowRate, referralCode, event) => {
+                        try {
+                            const tokenInfo = await this.getTokenInfo(chainName, reserve, provider);
+                            this.logger.log(`[${chainName}] Borrow event detected:`);
+                            this.logger.log(`- Reserve: ${reserve} (${tokenInfo.symbol})`);
+                            this.logger.log(`- User: ${user}`);
+                            this.logger.log(`- OnBehalfOf: ${onBehalfOf}`);
+                            this.logger.log(`- Amount: ${this.formatAmount(amount, tokenInfo.decimals)} ${tokenInfo.symbol}`);
+                            this.logger.log(`- Interest Rate Mode: ${interestRateMode}`);
+                            this.logger.log(`- Borrow Rate: ${ethers.formatUnits(borrowRate, 27)}`);
+                            this.logger.log(`- Referral Code: ${referralCode}`);
+                            this.logger.log(`- Transaction Hash: ${event?.transactionHash || event?.log?.transactionHash}`);
+
+                            if (!this.activeLoans.has(chainName)) {
+                                this.activeLoans.set(chainName, new Set());
+                            }
+                            const activeLoansSet = this.activeLoans.get(chainName);
+                            if (activeLoansSet) {
+                                activeLoansSet.add(onBehalfOf);
+                            }
+
+                            // 获取用户账户数据并创建/更新贷款记录
+                            const accountData = await this.getUserAccountData(contract, onBehalfOf);
+                            if (accountData) {
+                                const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
+                                const totalDebt = Number(ethers.formatUnits(accountData.totalDebtBase, 8));
+                                const waitTime = this.calculateWaitTime(healthFactor);
+                                const nextCheckTime = new Date(Date.now() + waitTime);
+
+                                await this.databaseService.updateLoanHealthFactor(
+                                    chainName,
+                                    onBehalfOf,
+                                    healthFactor,
+                                    nextCheckTime,
+                                    totalDebt
+                                );
+
+                                this.logger.log(`[${chainName}] Created/Updated loan record for user ${onBehalfOf}`);
+                                this.logger.log(`[${chainName}] Health factor: ${healthFactor}`);
+                                this.logger.log(`[${chainName}] Total debt: ${totalDebt.toFixed(2)} USD`);
+                            }
+
+                            await this.checkHealthFactor(chainName, onBehalfOf, contract);
+                        } catch (error) {
+                            this.logger.error(`[${chainName}] Error processing Borrow event: ${error.message}`);
+                        }
+                    });
+
+                    this.logger.log(`[${chainName}] Borrow event listener setup completed`);
+                } catch (error) {
+                    this.logger.error(`[${chainName}] Failed to set up Borrow event listener: ${error.message}`);
+                }
 
                 // 监听 Repay 事件
-                contract.on('Repay', async (user, repayer, amount, useATokens, event) => {
-                    this.logger.log(`[${chainName}] Repay event detected: user=${user}, amount=${ethers.formatEther(amount)} ETH`);
-                    const activeLoansSet = this.activeLoans.get(chainName);
-                    if (activeLoansSet) {
-                        activeLoansSet.delete(user);
+                contract.on('Repay', async (reserve, user, repayer, amount, useATokens, event) => {
+                    try {
+                        const tokenInfo = await this.getTokenInfo(chainName, reserve, provider);
+                        this.logger.log(`[${chainName}] Repay event detected:`);
+                        this.logger.log(`- Reserve: ${reserve} (${tokenInfo.symbol})`);
+                        this.logger.log(`- User: ${user}`);
+                        this.logger.log(`- Repayer: ${repayer}`);
+                        this.logger.log(`- Amount: ${this.formatAmount(amount, tokenInfo.decimals)} ${tokenInfo.symbol}`);
+                        this.logger.log(`- Use ATokens: ${useATokens}`);
+                        this.logger.log(`- Transaction Hash: ${event?.transactionHash || event?.log?.transactionHash}`);
+
+                        // 获取用户账户数据
+                        const accountData = await this.getUserAccountData(contract, user);
+                        if (!accountData) {
+                            this.logger.warn(`[${chainName}] Could not get account data for user ${user}`);
+                            return;
+                        }
+
+                        const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
+                        const totalDebt = Number(ethers.formatUnits(accountData.totalDebtBase, 8));
+                        const waitTime = this.calculateWaitTime(healthFactor);
+                        const nextCheckTime = new Date(Date.now() + waitTime);
+
+                        // 检查贷款记录是否存在
+                        const activeLoans = await this.databaseService.getActiveLoans(chainName);
+                        const loanExists = activeLoans.some(loan => loan.user.toLowerCase() === user.toLowerCase());
+
+                        if (loanExists) {
+                            // 更新数据库中的健康因子和下次检查时间
+                            await this.databaseService.updateLoanHealthFactor(
+                                chainName,
+                                user,
+                                healthFactor,
+                                nextCheckTime,
+                                totalDebt
+                            );
+
+                            this.logger.log(`[${chainName}] Updated loan record for user ${user}`);
+                            this.logger.log(`[${chainName}] Health factor: ${healthFactor}`);
+                            this.logger.log(`[${chainName}] Total debt: ${totalDebt.toFixed(2)} USD`);
+
+                            // 如果总债务为 0，关闭借款记录
+                            if (totalDebt === 0) {
+                                await this.databaseService.deactivateLoan(chainName, user);
+                                this.logger.log(`[${chainName}] Deactivated loan for user ${user} as total debt is 0`);
+
+                                // 从内存中移除该贷款
+                                const activeLoansSet = this.activeLoans.get(chainName);
+                                if (activeLoansSet) {
+                                    activeLoansSet.delete(user);
+                                }
+                            }
+                        } else {
+                            // 如果贷款记录不存在，记录告警
+                            this.logger.warn(`[${chainName}] Received Repay event for non-existent loan: user=${user}, amount=${this.formatAmount(amount, tokenInfo.decimals)} ${tokenInfo.symbol}`);
+                            this.logger.warn(`[${chainName}] This might indicate a missed Borrow event or database inconsistency`);
+                        }
+                    } catch (error) {
+                        this.logger.error(`[${chainName}] Error processing Repay event: ${error.message}`);
                     }
                 });
 
                 // 监听 LiquidationCall 事件
                 contract.on('LiquidationCall', async (collateralAsset, debtAsset, user, debtToCover, liquidatedCollateralAmount, liquidator, receiveAToken, event) => {
-                    this.logger.log(`[${chainName}] LiquidationCall event detected:`);
-                    this.logger.log(`- User: ${user}`);
-                    this.logger.log(`- Debt to Cover: ${ethers.formatEther(debtToCover)} ETH`);
-                    this.logger.log(`- Liquidated Amount: ${ethers.formatEther(liquidatedCollateralAmount)} ETH`);
-                    this.logger.log(`- Liquidator: ${liquidator}`);
+                    try {
+                        const [collateralInfo, debtInfo] = await Promise.all([
+                            this.getTokenInfo(chainName, collateralAsset, provider),
+                            this.getTokenInfo(chainName, debtAsset, provider),
+                        ]);
+                        this.logger.log(`[${chainName}] LiquidationCall event detected:`);
+                        this.logger.log(`- Collateral Asset: ${collateralAsset} (${collateralInfo.symbol})`);
+                        this.logger.log(`- Debt Asset: ${debtAsset} (${debtInfo.symbol})`);
+                        this.logger.log(`- User: ${user}`);
+                        this.logger.log(`- Debt to Cover: ${this.formatAmount(debtToCover, debtInfo.decimals)} ${debtInfo.symbol}`);
+                        this.logger.log(`- Liquidated Amount: ${this.formatAmount(liquidatedCollateralAmount, collateralInfo.decimals)} ${collateralInfo.symbol}`);
+                        this.logger.log(`- Liquidator: ${liquidator}`);
+                        this.logger.log(`- Receive AToken: ${receiveAToken}`);
+                        this.logger.log(`- Transaction Hash: ${event?.transactionHash || event?.log?.transactionHash}`);
 
-                    // 记录清算信息
-                    await this.databaseService.recordLiquidation(
-                        chainName,
-                        user,
-                        liquidator,
-                        event.transactionHash
-                    );
+                        // 获取用户账户数据
+                        const accountData = await this.getUserAccountData(contract, user);
+                        if (!accountData) {
+                            this.logger.warn(`[${chainName}] Could not get account data for user ${user}`);
+                            return;
+                        }
+
+                        const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
+                        const totalDebt = Number(ethers.formatUnits(accountData.totalDebtBase, 8));
+
+                        // 记录清算信息
+                        await this.databaseService.recordLiquidation(
+                            chainName,
+                            user,
+                            liquidator,
+                            event?.transactionHash || event?.log?.transactionHash
+                        );
+
+                        this.logger.log(`[${chainName}] Recorded liquidation for user ${user}`);
+                        this.logger.log(`[${chainName}] Final health factor: ${healthFactor}`);
+                        this.logger.log(`[${chainName}] Final total debt: ${totalDebt.toFixed(2)} USD`);
+
+                        // 从内存中移除该贷款
+                        const activeLoansSet = this.activeLoans.get(chainName);
+                        if (activeLoansSet) {
+                            activeLoansSet.delete(user);
+                        }
+                    } catch (error) {
+                        this.logger.error(`[${chainName}] Error processing LiquidationCall event: ${error.message}`);
+                    }
                 });
 
                 this.logger.log(`[${chainName}] Successfully set up event listeners and verified contract connection`);
@@ -149,11 +442,11 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 for (const loan of loansToCheck) {
                     const provider = await this.chainService.getProvider(loan.chainName);
                     const config = this.chainService.getChainConfig(loan.chainName);
+                    const abiPath = path.join(process.cwd(), 'abi', `${loan.chainName.toUpperCase()}_AAVE_V3_POOL_ABI.json`);
+                    const abi = JSON.parse(fs.readFileSync(abiPath, 'utf8'));
                     const contract = new ethers.Contract(
                         config.contracts.lendingPool,
-                        [
-                            'function getUserAccountData(address user) view returns (tuple(uint256 totalCollateralBase, uint256 totalDebtBase, uint256 availableBorrowsBase, uint256 currentLiquidationThreshold, uint256 ltv, uint256 healthFactor))'
-                        ],
+                        abi,
                         provider
                     );
                     await this.checkHealthFactor(loan.chainName, loan.user, contract);
@@ -173,20 +466,35 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         }, 60 * 60 * 1000);
     }
 
+    private formatDate(date: Date): string {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        const seconds = String(date.getSeconds()).padStart(2, '0');
+        return `${year}/${month}/${day} ${hours}:${minutes}:${seconds}`;
+    }
+
     private printHeartbeat() {
         const chains = this.chainService.getActiveChains();
-        const now = new Date().toISOString();
+        const now = new Date();
+        const formattedDate = this.formatDate(now);
 
-        this.logger.log(`[${now}] 心跳检测 - 正在监听的合约：`);
-        chains.forEach(chainName => {
+        this.logger.log(`心跳检测 - 正在监听的合约：`);
+        for (const chainName of chains) {
             const config = this.chainService.getChainConfig(chainName);
             this.logger.log(`[${chainName}] LendingPool: ${config.contracts.lendingPool}`);
 
-            // 输出当前活跃贷款数量
-            const activeLoansSet = this.activeLoans.get(chainName);
-            const activeLoansCount = activeLoansSet ? activeLoansSet.size : 0;
-            this.logger.log(`[${chainName}] 当前活跃贷款数量: ${activeLoansCount}`);
-        });
+            // 从数据库获取当前活跃贷款数量
+            this.databaseService.getActiveLoans(chainName)
+                .then(activeLoans => {
+                    this.logger.log(`[${chainName}] 当前活跃贷款数量: ${activeLoans.length}`);
+                })
+                .catch(error => {
+                    this.logger.error(`[${chainName}] Error getting active loans count: ${error.message}`);
+                });
+        }
     }
 
     private async checkHealthFactor(chainName: string, user: string, contract: ethers.Contract) {
@@ -195,21 +503,25 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             if (!accountData) return;
 
             const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
+            const totalDebt = Number(ethers.formatUnits(accountData.totalDebtBase, 8));
             this.logger.log(`[${chainName}] User ${user} health factor: ${healthFactor}`);
+            this.logger.log(`[${chainName}] User ${user} total debt: ${totalDebt.toFixed(2)} USD`);
 
             // 计算下次检查的等待时间（毫秒）
             const waitTime = this.calculateWaitTime(healthFactor);
             const nextCheckTime = new Date(Date.now() + waitTime);
+            const formattedDate = this.formatDate(nextCheckTime);
 
-            // 更新数据库中的健康因子和下次检查时间
+            // 更新数据库中的健康因子、总债务和下次检查时间
             await this.databaseService.updateLoanHealthFactor(
                 chainName,
                 user,
                 healthFactor,
-                nextCheckTime
+                nextCheckTime,
+                totalDebt
             );
 
-            this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${nextCheckTime})`);
+            this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate})`);
 
             // 如果健康因子低于清算阈值，执行清算
             if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
@@ -275,7 +587,11 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         const factor = (healthFactor - this.HEALTH_FACTOR_THRESHOLD) /
             (2 - this.HEALTH_FACTOR_THRESHOLD); // 假设最大健康因子为2
 
-        return Math.floor(baseTime + (maxTime - baseTime) * Math.log1p(factor));
+        // 确保等待时间不超过最大值
+        return Math.min(
+            Math.floor(baseTime + (maxTime - baseTime) * Math.log1p(factor)),
+            this.MAX_WAIT_TIME
+        );
     }
 
     private async executeLiquidation(chainName: string, user: string, contract: ethers.Contract) {

@@ -1,23 +1,12 @@
-export declare class DatabaseService {
+import { OnModuleInit } from '@nestjs/common';
+import { PrismaClient } from '@prisma/client';
+export declare class DatabaseService implements OnModuleInit {
     private readonly logger;
-    private prisma;
+    private static prisma;
     constructor();
-    updateLoanHealthFactor(chainName: string, user: string, healthFactor: number, nextCheckTime: Date): Promise<{
-        id: number;
-        chainName: string;
-        user: string;
-        healthFactor: number;
-        lastCheckTime: Date;
-        nextCheckTime: Date;
-        isActive: boolean;
-        createdAt: Date;
-        updatedAt: Date;
-        liquidationDiscoveredAt: Date | null;
-        liquidationTxHash: string | null;
-        liquidationTime: Date | null;
-        liquidator: string | null;
-        liquidationDelay: number | null;
-    }>;
+    onModuleInit(): Promise<void>;
+    get prisma(): PrismaClient<import(".prisma/client").Prisma.PrismaClientOptions, never, import("@prisma/client/runtime/library").DefaultArgs>;
+    updateLoanHealthFactor(chainName: string, user: string, healthFactor: number, nextCheckTime: Date, totalDebt: number): Promise<void>;
     markLiquidationDiscovered(chainName: string, user: string): Promise<{
         id: number;
         chainName: string;
@@ -33,6 +22,7 @@ export declare class DatabaseService {
         liquidationTime: Date | null;
         liquidator: string | null;
         liquidationDelay: number | null;
+        totalDebt: import("@prisma/client/runtime/library").Decimal;
     }>;
     recordLiquidation(chainName: string, user: string, liquidator: string, txHash: string): Promise<{
         id: number;
@@ -49,8 +39,9 @@ export declare class DatabaseService {
         liquidationTime: Date | null;
         liquidator: string | null;
         liquidationDelay: number | null;
+        totalDebt: import("@prisma/client/runtime/library").Decimal;
     }>;
-    getActiveLoans(): Promise<{
+    getActiveLoans(chainName?: string): Promise<{
         id: number;
         chainName: string;
         user: string;
@@ -65,6 +56,7 @@ export declare class DatabaseService {
         liquidationTime: Date | null;
         liquidator: string | null;
         liquidationDelay: number | null;
+        totalDebt: import("@prisma/client/runtime/library").Decimal;
     }[]>;
     deactivateLoan(chainName: string, user: string): Promise<{
         id: number;
@@ -81,6 +73,7 @@ export declare class DatabaseService {
         liquidationTime: Date | null;
         liquidator: string | null;
         liquidationDelay: number | null;
+        totalDebt: import("@prisma/client/runtime/library").Decimal;
     }>;
     getLoansToCheck(): Promise<{
         id: number;
@@ -97,5 +90,33 @@ export declare class DatabaseService {
         liquidationTime: Date | null;
         liquidator: string | null;
         liquidationDelay: number | null;
+        totalDebt: import("@prisma/client/runtime/library").Decimal;
+    }[]>;
+    getToken(chainName: string, address: string): Promise<{
+        symbol: string;
+        id: number;
+        chainName: string;
+        createdAt: Date;
+        updatedAt: Date;
+        address: string;
+        decimals: number;
+    }>;
+    saveToken(chainName: string, address: string, symbol: string, decimals: number): Promise<{
+        symbol: string;
+        id: number;
+        chainName: string;
+        createdAt: Date;
+        updatedAt: Date;
+        address: string;
+        decimals: number;
+    }>;
+    getAllTokens(chainName?: string): Promise<{
+        symbol: string;
+        id: number;
+        chainName: string;
+        createdAt: Date;
+        updatedAt: Date;
+        address: string;
+        decimals: number;
     }[]>;
 }
