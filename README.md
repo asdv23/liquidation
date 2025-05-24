@@ -1,31 +1,66 @@
-# Liquidation Aave protocol example
-This repository is created only with educational purposes, it may contain errors. Use by your OWN risk
+## Foundry
 
-More info in Medium post
-* [Aave liquidation script](https://medium.com/coinmonks/creating-a-liquidation-script-for-aave-defi-protocol-ef584ad87e8f) 
+**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
 
-# Installation instructions
+Foundry consists of:
 
-1. Create the .env file
- `mv .env.template .env`
+-   **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
+-   **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
+-   **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
+-   **Chisel**: Fast, utilitarian, and verbose solidity REPL.
 
-2. Fill the variables in the .env file
+## Documentation
 
-3. Install dependencies
-`npm install`
+https://book.getfoundry.sh/
 
+## Usage
 
-# Integration test
-This is an integration test, and will call external resources in ropsten network
+### Build
 
-1. Fill the test data
+```shell
+$ forge build
+```
 
-2. Execute test
-`npm test`
+### Test
 
-# Execute liquidation
-1. Fill the data on app.js
+```shell
+$ forge test
+```
 
-2. Execute liquidation script
-`npm start`
+### Format
 
+```shell
+$ forge fmt
+```
+
+### Gas Snapshots
+
+```shell
+$ forge snapshot
+```
+
+### Anvil
+
+```shell
+$ anvil
+```
+
+### Deploy
+
+```shell
+$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
+```
+
+### Cast
+
+```shell
+$ cast <subcommand>
+```
+
+### Help
+
+```shell
+$ forge --help
+$ anvil --help
+$ cast --help
+```
