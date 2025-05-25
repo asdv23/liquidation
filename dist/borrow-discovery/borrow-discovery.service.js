@@ -25,7 +25,6 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         this.databaseService = databaseService;
         this.logger = new common_1.Logger(BorrowDiscoveryService_1.name);
         this.activeLoans = new Map();
-        this.liquidationTimes = new Map();
         this.tokenCache = new Map();
         this.LIQUIDATION_THRESHOLD = 1.005;
         this.CRITICAL_THRESHOLD = 1.01;
@@ -42,7 +41,6 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         await this.loadActiveLoans();
         await this.startListening();
         this.startHealthFactorChecker();
-        this.startHeartbeat();
     }
     async initializeResources() {
         const chains = this.chainService.getActiveChains();
@@ -68,13 +66,6 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             throw new Error(`Contract not initialized for chain ${chainName}`);
         }
         return contract;
-    }
-    getProvider(chainName) {
-        const provider = this.providerCache.get(chainName);
-        if (!provider) {
-            throw new Error(`Provider not initialized for chain ${chainName}`);
-        }
-        return provider;
     }
     async loadTokenCache() {
         try {
@@ -173,8 +164,6 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             try {
                 const provider = await this.chainService.getProvider(chainName);
                 const config = this.chainService.getChainConfig(chainName);
-                const abiPath = path.join(process.cwd(), 'abi', `${chainName.toUpperCase()}_AAVE_V3_POOL_ABI.json`);
-                const abi = JSON.parse(fs.readFileSync(abiPath, 'utf8'));
                 const currentBlock = await provider.getBlockNumber();
                 this.logger.log(`[${chainName}] Current block number: ${currentBlock}`);
                 const code = await provider.getCode(config.contracts.lendingPool);
@@ -183,22 +172,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                     continue;
                 }
                 this.logger.log(`[${chainName}] Contract code found at ${config.contracts.lendingPool}`);
-                const contract = new ethers_1.ethers.Contract(config.contracts.lendingPool, abi, provider);
-                try {
-                    const wethAddress = chainName === 'base'
-                        ? '0x4200000000000000000000000000000000000006'
-                        : '0x4200000000000000000000000000000000000006';
-                    const reserveData = await contract.getReserveData(wethAddress);
-                    this.logger.log(`[${chainName}] Successfully connected to Aave V3 Pool at ${config.contracts.lendingPool}`);
-                    this.logger.log(`[${chainName}] WETH Reserve Data:`);
-                    this.logger.log(`- Current Liquidity Rate: ${ethers_1.ethers.formatUnits(reserveData.currentLiquidityRate, 27)}`);
-                    this.logger.log(`- Current Variable Borrow Rate: ${ethers_1.ethers.formatUnits(reserveData.currentVariableBorrowRate, 27)}`);
-                    this.logger.log(`- Current Stable Borrow Rate: ${ethers_1.ethers.formatUnits(reserveData.currentStableBorrowRate, 27)}`);
-                }
-                catch (error) {
-                    this.logger.error(`[${chainName}] Failed to verify contract connection: ${error.message}`);
-                    continue;
-                }
+                const contract = this.getContract(chainName);
                 this.logger.log(`[${chainName}] Setting up Borrow event listener...`);
                 try {
                     contract.on('Borrow', async (reserve, user, onBehalfOf, amount, interestRateMode, borrowRate, referralCode, event) => {
@@ -292,12 +266,6 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         checkAllLoans();
         this.checkInterval = setInterval(checkAllLoans, this.MIN_WAIT_TIME);
     }
-    startHeartbeat() {
-        this.printHeartbeat();
-        this.heartbeatInterval = setInterval(() => {
-            this.printHeartbeat();
-        }, 60 * 60 * 1000);
-    }
     formatDate(date) {
         const year = date.getFullYear();
         const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -307,29 +275,13 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         const seconds = String(date.getSeconds()).padStart(2, '0');
         return `${year}/${month}/${day} ${hours}:${minutes}:${seconds}`;
     }
-    printHeartbeat() {
-        const chains = this.chainService.getActiveChains();
-        this.logger.log(`心跳检测 - 正在监听的合约：`);
-        for (const chainName of chains) {
-            const config = this.chainService.getChainConfig(chainName);
-            this.logger.log(`[${chainName}] LendingPool: ${config.contracts.lendingPool}`);
-            this.databaseService.getActiveLoans(chainName)
-                .then(activeLoans => {
-                this.logger.log(`[${chainName}] 当前活跃贷款数量: ${activeLoans.length}`);
-            })
-                .catch(error => {
-                this.logger.error(`[${chainName}] Error getting active loans count: ${error.message}`);
-            });
-        }
-    }
     async checkHealthFactorsBatch(chainName) {
         try {
             const activeLoansMap = this.activeLoans.get(chainName);
             if (!activeLoansMap || activeLoansMap.size === 0)
                 return;
-            const now = new Date();
             const usersToCheck = Array.from(activeLoansMap.entries())
-                .filter(([_, info]) => info.healthFactor <= this.LIQUIDATION_THRESHOLD)
+                .filter(([_, info]) => info.nextCheckTime <= new Date())
                 .map(([user]) => user);
             if (usersToCheck.length === 0)
                 return;
@@ -348,13 +300,13 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                     this.logger.log(`[${chainName}] Removed user ${user} from active loans and database as total debt is 0`);
                     continue;
                 }
-                if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
-                    this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}`);
+                if (healthFactor <= this.HEALTH_FACTOR_THRESHOLD) {
+                    this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.HEALTH_FACTOR_THRESHOLD} reached for user ${user}`);
                 }
                 const waitTime = this.calculateWaitTime(healthFactor);
                 const nextCheckTime = new Date(Date.now() + waitTime);
                 const formattedDate = this.formatDate(nextCheckTime);
-                this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate})`);
+                this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate}), healthFactor: ${healthFactor}`);
                 activeLoansMap.set(user, {
                     nextCheckTime: new Date(Date.now() + waitTime),
                     healthFactor: healthFactor

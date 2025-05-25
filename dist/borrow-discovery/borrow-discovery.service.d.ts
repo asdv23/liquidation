@@ -8,7 +8,6 @@ export declare class BorrowDiscoveryService implements OnModuleInit, OnModuleDes
     private readonly databaseService;
     private readonly logger;
     private activeLoans;
-    private liquidationTimes;
     private tokenCache;
     private readonly LIQUIDATION_THRESHOLD;
     private readonly CRITICAL_THRESHOLD;
@@ -23,16 +22,13 @@ export declare class BorrowDiscoveryService implements OnModuleInit, OnModuleDes
     onModuleInit(): Promise<void>;
     private initializeResources;
     private getContract;
-    private getProvider;
     private loadTokenCache;
     private getTokenInfo;
     private formatAmount;
     private loadActiveLoans;
     private startListening;
     private startHealthFactorChecker;
-    private startHeartbeat;
     private formatDate;
-    private printHeartbeat;
     private checkHealthFactorsBatch;
     private getUserAccountDataBatch;
     private calculateHealthFactor;

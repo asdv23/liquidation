@@ -1,7 +1,6 @@
 import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { ChainService } from '../chain/chain.service';
 import { ethers } from 'ethers';
-import { ChainConfig } from '../interfaces/chain-config.interface';
 import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '../database/database.service';
 import * as fs from 'fs';
@@ -30,7 +29,6 @@ interface LoanInfo {
 export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
     private readonly logger = new Logger(BorrowDiscoveryService.name);
     private activeLoans: Map<string, Map<string, LoanInfo>> = new Map();
-    private liquidationTimes: Map<string, Map<string, number>> = new Map();
     private tokenCache: Map<string, Map<string, TokenInfo>> = new Map();
     private readonly LIQUIDATION_THRESHOLD = 1.005; // 清算阈值
     private readonly CRITICAL_THRESHOLD = 1.01; // 危险阈值
@@ -59,7 +57,6 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         await this.loadActiveLoans();
         await this.startListening();
         this.startHealthFactorChecker();
-        this.startHeartbeat();
     }
 
     private async initializeResources() {
@@ -94,14 +91,6 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             throw new Error(`Contract not initialized for chain ${chainName}`);
         }
         return contract;
-    }
-
-    private getProvider(chainName: string): ethers.Provider {
-        const provider = this.providerCache.get(chainName);
-        if (!provider) {
-            throw new Error(`Provider not initialized for chain ${chainName}`);
-        }
-        return provider;
     }
 
     private async loadTokenCache() {
@@ -220,10 +209,6 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 const provider = await this.chainService.getProvider(chainName);
                 const config = this.chainService.getChainConfig(chainName);
 
-                // 读取对应链的 ABI 文件
-                const abiPath = path.join(process.cwd(), 'abi', `${chainName.toUpperCase()}_AAVE_V3_POOL_ABI.json`);
-                const abi = JSON.parse(fs.readFileSync(abiPath, 'utf8'));
-
                 // 获取当前区块高度
                 const currentBlock = await provider.getBlockNumber();
                 this.logger.log(`[${chainName}] Current block number: ${currentBlock}`);
@@ -236,29 +221,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 }
                 this.logger.log(`[${chainName}] Contract code found at ${config.contracts.lendingPool}`);
 
-                const contract = new ethers.Contract(
-                    config.contracts.lendingPool,
-                    abi,
-                    provider as ethers.ContractRunner
-                );
-
-                // 验证合约连接
-                try {
-                    // 尝试获取一个已知的储备资产数据
-                    const wethAddress = chainName === 'base'
-                        ? '0x4200000000000000000000000000000000000006'  // Base WETH
-                        : '0x4200000000000000000000000000000000000006'; // Optimism WETH
-
-                    const reserveData = await contract.getReserveData(wethAddress);
-                    this.logger.log(`[${chainName}] Successfully connected to Aave V3 Pool at ${config.contracts.lendingPool}`);
-                    this.logger.log(`[${chainName}] WETH Reserve Data:`);
-                    this.logger.log(`- Current Liquidity Rate: ${ethers.formatUnits(reserveData.currentLiquidityRate, 27)}`);
-                    this.logger.log(`- Current Variable Borrow Rate: ${ethers.formatUnits(reserveData.currentVariableBorrowRate, 27)}`);
-                    this.logger.log(`- Current Stable Borrow Rate: ${ethers.formatUnits(reserveData.currentStableBorrowRate, 27)}`);
-                } catch (error) {
-                    this.logger.error(`[${chainName}] Failed to verify contract connection: ${error.message}`);
-                    continue;
-                }
+                const contract = this.getContract(chainName);
 
                 // 监听 Borrow 事件
                 this.logger.log(`[${chainName}] Setting up Borrow event listener...`);
@@ -375,15 +338,6 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         this.checkInterval = setInterval(checkAllLoans, this.MIN_WAIT_TIME);
     }
 
-    private startHeartbeat() {
-        // 启动时立即执行一次心跳
-        this.printHeartbeat();
-        // 每小时执行一次心跳
-        this.heartbeatInterval = setInterval(() => {
-            this.printHeartbeat();
-        }, 60 * 60 * 1000);
-    }
-
     private formatDate(date: Date): string {
         const year = date.getFullYear();
         const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -394,32 +348,13 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         return `${year}/${month}/${day} ${hours}:${minutes}:${seconds}`;
     }
 
-    private printHeartbeat() {
-        const chains = this.chainService.getActiveChains();
-        this.logger.log(`心跳检测 - 正在监听的合约：`);
-        for (const chainName of chains) {
-            const config = this.chainService.getChainConfig(chainName);
-            this.logger.log(`[${chainName}] LendingPool: ${config.contracts.lendingPool}`);
-
-            // 从数据库获取当前活跃贷款数量
-            this.databaseService.getActiveLoans(chainName)
-                .then(activeLoans => {
-                    this.logger.log(`[${chainName}] 当前活跃贷款数量: ${activeLoans.length}`);
-                })
-                .catch(error => {
-                    this.logger.error(`[${chainName}] Error getting active loans count: ${error.message}`);
-                });
-        }
-    }
-
     private async checkHealthFactorsBatch(chainName: string) {
         try {
             const activeLoansMap = this.activeLoans.get(chainName);
             if (!activeLoansMap || activeLoansMap.size === 0) return;
 
-            const now = new Date();
             const usersToCheck = Array.from(activeLoansMap.entries())
-                .filter(([_, info]) => info.healthFactor <= this.LIQUIDATION_THRESHOLD)
+                .filter(([_, info]) => info.nextCheckTime <= new Date())
                 .map(([user]) => user);
 
             if (usersToCheck.length === 0) return;
@@ -444,16 +379,16 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                     continue;
                 }
 
-                // 如果健康因子低于清算阈值，记录日志
-                if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
-                    this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}`);
+                // 如果健康因子低于健康阈值，记录日志
+                if (healthFactor <= this.HEALTH_FACTOR_THRESHOLD) {
+                    this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.HEALTH_FACTOR_THRESHOLD} reached for user ${user}`);
                 }
 
                 // 更新下次检查时间
                 const waitTime = this.calculateWaitTime(healthFactor);
                 const nextCheckTime = new Date(Date.now() + waitTime);
                 const formattedDate = this.formatDate(nextCheckTime);
-                this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate})`);
+                this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate}), healthFactor: ${healthFactor}`);
 
                 // 更新内存中的健康因子和下次检查时间
                 activeLoansMap.set(user, {
