@@ -14,10 +14,12 @@ export declare class BorrowDiscoveryService implements OnModuleInit, OnModuleDes
     private readonly HEALTH_FACTOR_THRESHOLD;
     private readonly MIN_WAIT_TIME;
     private readonly MAX_WAIT_TIME;
+    private readonly PRIVATE_KEY;
     private checkInterval;
     private heartbeatInterval;
     private contractCache;
     private providerCache;
+    private signerCache;
     constructor(chainService: ChainService, configService: ConfigService, databaseService: DatabaseService);
     onModuleInit(): Promise<void>;
     private initializeResources;

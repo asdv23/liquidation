@@ -14,13 +14,21 @@ exports.DatabaseService = void 0;
 const common_1 = require("@nestjs/common");
 const client_1 = require("@prisma/client");
 const path = require("path");
+const config_1 = require("@nestjs/config");
 let DatabaseService = DatabaseService_1 = class DatabaseService {
-    constructor() {
+    constructor(configService) {
+        this.configService = configService;
         this.logger = new common_1.Logger(DatabaseService_1.name);
         if (!DatabaseService_1.prisma) {
-            const dbPath = path.join(process.cwd(), 'prisma', 'dev.db');
+            const dbPath = this.configService.get('DATABASE_URL', path.join(process.cwd(), 'prisma', 'dev.db'));
             this.logger.log(`Using SQLite database at: ${dbPath}`);
-            DatabaseService_1.prisma = new client_1.PrismaClient();
+            DatabaseService_1.prisma = new client_1.PrismaClient({
+                datasources: {
+                    db: {
+                        url: `file:${dbPath}`
+                    }
+                }
+            });
         }
     }
     async onModuleInit() {
@@ -229,6 +237,6 @@ let DatabaseService = DatabaseService_1 = class DatabaseService {
 exports.DatabaseService = DatabaseService;
 exports.DatabaseService = DatabaseService = DatabaseService_1 = __decorate([
     (0, common_1.Injectable)(),
-    __metadata("design:paramtypes", [])
+    __metadata("design:paramtypes", [config_1.ConfigService])
 ], DatabaseService);
 //# sourceMappingURL=database.service.js.map

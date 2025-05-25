@@ -31,8 +31,10 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         this.HEALTH_FACTOR_THRESHOLD = 1.02;
         this.contractCache = new Map();
         this.providerCache = new Map();
+        this.signerCache = new Map();
         this.MIN_WAIT_TIME = this.configService.get('MIN_CHECK_INTERVAL', 1000);
         this.MAX_WAIT_TIME = this.configService.get('MAX_CHECK_INTERVAL', 30 * 60 * 1000);
+        this.PRIVATE_KEY = this.configService.get('PRIVATE_KEY');
     }
     async onModuleInit() {
         this.logger.log('BorrowDiscoveryService initializing...');
@@ -48,12 +50,14 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             try {
                 const provider = await this.chainService.getProvider(chainName);
                 this.providerCache.set(chainName, provider);
+                const signer = new ethers_1.ethers.Wallet(this.PRIVATE_KEY, provider);
+                this.signerCache.set(chainName, signer);
                 const config = this.chainService.getChainConfig(chainName);
                 const abiPath = path.join(process.cwd(), 'abi', `${chainName.toUpperCase()}_AAVE_V3_POOL_ABI.json`);
                 const abi = JSON.parse(fs.readFileSync(abiPath, 'utf8'));
-                const contract = new ethers_1.ethers.Contract(config.contracts.lendingPool, abi, provider);
+                const contract = new ethers_1.ethers.Contract(config.contracts.lendingPool, abi, signer);
                 this.contractCache.set(chainName, contract);
-                this.logger.log(`[${chainName}] Initialized provider and contract`);
+                this.logger.log(`[${chainName}] Initialized provider, signer and contract`);
             }
             catch (error) {
                 this.logger.error(`[${chainName}] Failed to initialize resources: ${error.message}`);
@@ -291,7 +295,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             const BATCH_SIZE = 100;
             for (let i = 0; i < usersToCheck.length; i += BATCH_SIZE) {
                 const batchUsers = usersToCheck.slice(i, i + BATCH_SIZE);
-                this.logger.log(`[${chainName}] Checking health factors for batch ${i / BATCH_SIZE + 1}/${Math.ceil(usersToCheck.length / BATCH_SIZE)} (${batchUsers.length}/${usersToCheck.length} users)...`);
+                this.logger.log(`[${chainName}] Checking health factors for batch ${i / BATCH_SIZE + 1}/${Math.ceil(usersToCheck.length / BATCH_SIZE)} (${batchUsers.length}/${activeLoansMap.size} users)...`);
                 const contract = this.getContract(chainName);
                 const accountDataMap = await this.getUserAccountDataBatch(contract, batchUsers);
                 for (const user of batchUsers) {
@@ -306,8 +310,13 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                         this.logger.log(`[${chainName}] Removed user ${user} from active loans and database as total debt is 0`);
                         continue;
                     }
+                    if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
+                        this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}, attempting liquidation`);
+                        await this.executeLiquidation(chainName, user, contract);
+                        continue;
+                    }
                     if (healthFactor <= this.HEALTH_FACTOR_THRESHOLD) {
-                        this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.HEALTH_FACTOR_THRESHOLD} reached for user ${user}`);
+                        this.logger.log(`[${chainName}] Health factor ${healthFactor} <= ${this.HEALTH_FACTOR_THRESHOLD} reached for user ${user}`);
                     }
                     const waitTime = this.calculateWaitTime(healthFactor);
                     const nextCheckTime = new Date(Date.now() + waitTime);
@@ -381,6 +390,30 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
     async executeLiquidation(chainName, user, contract) {
         try {
             this.logger.log(`[${chainName}] Executing liquidation for user ${user}`);
+            const userReserves = await contract.getUserReservesData(user);
+            const debtReserve = userReserves.find(reserve => reserve.currentStableDebt > 0 || reserve.currentVariableDebt > 0);
+            if (!debtReserve) {
+                this.logger.log(`[${chainName}] No debt found for user ${user}`);
+                return;
+            }
+            const debtAmount = debtReserve.currentStableDebt > 0 ?
+                debtReserve.currentStableDebt :
+                debtReserve.currentVariableDebt;
+            const liquidationBonus = await contract.getLiquidationBonus(debtReserve.asset);
+            const bonusAmount = (debtAmount * BigInt(liquidationBonus)) / BigInt(10000);
+            const expectedProfit = Number(ethers_1.ethers.formatUnits(bonusAmount, 18)) / Number(ethers_1.ethers.formatUnits(debtAmount, 18));
+            this.logger.log(`[${chainName}] Expected profit ${expectedProfit}`);
+            const flashLoanParams = {
+                receiverAddress: contract.target,
+                asset: debtReserve.asset,
+                amount: debtAmount,
+                params: ethers_1.ethers.AbiCoder.defaultAbiCoder().encode(['address', 'bool'], [user, false]),
+                referralCode: 0
+            };
+            const tx = await contract.flashLoanSimple(flashLoanParams.receiverAddress, flashLoanParams.asset, flashLoanParams.amount, flashLoanParams.params, flashLoanParams.referralCode);
+            this.logger.log(`[${chainName}] Liquidation transaction sent: ${tx.hash}`);
+            const receipt = await tx.wait();
+            this.logger.log(`[${chainName}] Liquidation transaction confirmed: ${receipt.hash}`);
         }
         catch (error) {
             this.logger.error(`[${chainName}] Error executing liquidation for user ${user}: ${error.message}`);

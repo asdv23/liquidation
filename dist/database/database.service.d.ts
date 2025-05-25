@@ -1,9 +1,11 @@
 import { OnModuleInit } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
+import { ConfigService } from '@nestjs/config';
 export declare class DatabaseService implements OnModuleInit {
+    private readonly configService;
     private readonly logger;
     private static prisma;
-    constructor();
+    constructor(configService: ConfigService);
     onModuleInit(): Promise<void>;
     get prisma(): PrismaClient<import(".prisma/client").Prisma.PrismaClientOptions, never, import("@prisma/client/runtime/library").DefaultArgs>;
     markLiquidationDiscovered(chainName: string, user: string): Promise<{

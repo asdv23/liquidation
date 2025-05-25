@@ -1,17 +1,24 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 import * as path from 'path';
+import { ConfigService } from '@nestjs/config';
 
 @Injectable()
 export class DatabaseService implements OnModuleInit {
     private readonly logger = new Logger(DatabaseService.name);
     private static prisma: PrismaClient;
 
-    constructor() {
+    constructor(private readonly configService: ConfigService) {
         if (!DatabaseService.prisma) {
-            const dbPath = path.join(process.cwd(), 'prisma', 'dev.db');
+            const dbPath = this.configService.get<string>('DATABASE_URL', path.join(process.cwd(), 'prisma', 'dev.db'));
             this.logger.log(`Using SQLite database at: ${dbPath}`);
-            DatabaseService.prisma = new PrismaClient();
+            DatabaseService.prisma = new PrismaClient({
+                datasources: {
+                    db: {
+                        url: `file:${dbPath}`
+                    }
+                }
+            });
         }
     }
 

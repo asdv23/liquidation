@@ -35,10 +35,12 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
     private readonly HEALTH_FACTOR_THRESHOLD = 1.02; // 健康阈值
     private readonly MIN_WAIT_TIME: number; // 最小等待时间（毫秒）
     private readonly MAX_WAIT_TIME: number; // 最大等待时间（毫秒）
+    private readonly PRIVATE_KEY: string; // EOA 私钥
     private checkInterval: NodeJS.Timeout;
     private heartbeatInterval: NodeJS.Timeout; // 心跳定时器
     private contractCache: Map<string, ethers.Contract> = new Map(); // 合约缓存
     private providerCache: Map<string, ethers.Provider> = new Map(); // Provider 缓存
+    private signerCache: Map<string, ethers.Signer> = new Map(); // Signer 缓存
 
     constructor(
         private readonly chainService: ChainService,
@@ -48,6 +50,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         // 从环境变量读取配置，默认值：最小200ms，最大30分钟
         this.MIN_WAIT_TIME = this.configService.get<number>('MIN_CHECK_INTERVAL', 1000);
         this.MAX_WAIT_TIME = this.configService.get<number>('MAX_CHECK_INTERVAL', 30 * 60 * 1000);
+        this.PRIVATE_KEY = this.configService.get<string>('PRIVATE_KEY');
     }
 
     async onModuleInit() {
@@ -67,6 +70,10 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 const provider = await this.chainService.getProvider(chainName);
                 this.providerCache.set(chainName, provider);
 
+                // 初始化 signer
+                const signer = new ethers.Wallet(this.PRIVATE_KEY, provider);
+                this.signerCache.set(chainName, signer);
+
                 // 初始化合约
                 const config = this.chainService.getChainConfig(chainName);
                 const abiPath = path.join(process.cwd(), 'abi', `${chainName.toUpperCase()}_AAVE_V3_POOL_ABI.json`);
@@ -74,11 +81,11 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 const contract = new ethers.Contract(
                     config.contracts.lendingPool,
                     abi,
-                    provider as ethers.ContractRunner
+                    signer
                 );
                 this.contractCache.set(chainName, contract);
 
-                this.logger.log(`[${chainName}] Initialized provider and contract`);
+                this.logger.log(`[${chainName}] Initialized provider, signer and contract`);
             } catch (error) {
                 this.logger.error(`[${chainName}] Failed to initialize resources: ${error.message}`);
             }
@@ -364,7 +371,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             const BATCH_SIZE = 100;
             for (let i = 0; i < usersToCheck.length; i += BATCH_SIZE) {
                 const batchUsers = usersToCheck.slice(i, i + BATCH_SIZE);
-                this.logger.log(`[${chainName}] Checking health factors for batch ${i / BATCH_SIZE + 1}/${Math.ceil(usersToCheck.length / BATCH_SIZE)} (${batchUsers.length}/${usersToCheck.length} users)...`);
+                this.logger.log(`[${chainName}] Checking health factors for batch ${i / BATCH_SIZE + 1}/${Math.ceil(usersToCheck.length / BATCH_SIZE)} (${batchUsers.length}/${activeLoansMap.size} users)...`);
 
                 const contract = this.getContract(chainName);
                 const accountDataMap = await this.getUserAccountDataBatch(contract, batchUsers);
@@ -384,9 +391,16 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                         continue;
                     }
 
+                    // 如果健康因子低于清算阈值，尝试清算
+                    if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
+                        this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}, attempting liquidation`);
+                        await this.executeLiquidation(chainName, user, contract);
+                        continue;
+                    }
+
                     // 如果健康因子低于健康阈值，记录日志
                     if (healthFactor <= this.HEALTH_FACTOR_THRESHOLD) {
-                        this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.HEALTH_FACTOR_THRESHOLD} reached for user ${user}`);
+                        this.logger.log(`[${chainName}] Health factor ${healthFactor} <= ${this.HEALTH_FACTOR_THRESHOLD} reached for user ${user}`);
                     }
 
                     // 更新下次检查时间
@@ -490,13 +504,54 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
     private async executeLiquidation(chainName: string, user: string, contract: ethers.Contract) {
         try {
             this.logger.log(`[${chainName}] Executing liquidation for user ${user}`);
-            // TODO: 实现清算逻辑
-            // 1. 获取用户的债务信息
-            // 2. 计算清算金额
-            // 3. 发送清算交易
 
-            // 清算后，将贷款标记为非活跃
-            // await this.databaseService.deactivateLoan(chainName, user);
+            // 1. 获取用户的储备数据
+            const userReserves = await contract.getUserReservesData(user);
+            const debtReserve = userReserves.find(reserve => reserve.currentStableDebt > 0 || reserve.currentVariableDebt > 0);
+            if (!debtReserve) {
+                this.logger.log(`[${chainName}] No debt reserve found for user ${user}`);
+                return;
+            }
+
+            // 2. 计算清算金额
+            const debtAmount = debtReserve.currentStableDebt > 0 ?
+                debtReserve.currentStableDebt :
+                debtReserve.currentVariableDebt;
+
+            // 3. 获取清算奖励
+            const liquidationBonus = await contract.getLiquidationBonus(debtReserve.asset);
+            const bonusAmount = (debtAmount * BigInt(liquidationBonus)) / BigInt(10000);
+
+            // 4. 计算预期利润
+            const expectedProfit = Number(ethers.formatUnits(bonusAmount, 18)) / Number(ethers.formatUnits(debtAmount, 18));
+            this.logger.log(`[${chainName}] Expected profit ${expectedProfit}`);
+
+            // 5. 执行闪电贷清算
+            const flashLoanParams = {
+                receiverAddress: contract.target,
+                asset: debtReserve.asset,
+                amount: debtAmount,
+                params: ethers.AbiCoder.defaultAbiCoder().encode(
+                    ['address', 'bool'],
+                    [user, false] // user address and receiveAToken flag
+                ),
+                referralCode: 0
+            };
+
+            // 6. 发送清算交易
+            const tx = await contract.flashLoanSimple(
+                flashLoanParams.receiverAddress,
+                flashLoanParams.asset,
+                flashLoanParams.amount,
+                flashLoanParams.params,
+                flashLoanParams.referralCode
+            );
+
+            this.logger.log(`[${chainName}] Liquidation transaction sent: ${tx.hash}`);
+
+            // 7. 等待交易确认
+            const receipt = await tx.wait();
+            this.logger.log(`[${chainName}] Liquidation transaction confirmed: ${receipt.hash}`);
         } catch (error) {
             this.logger.error(`[${chainName}] Error executing liquidation for user ${user}: ${error.message}`);
         }
