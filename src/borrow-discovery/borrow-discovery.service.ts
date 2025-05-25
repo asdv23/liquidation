@@ -360,42 +360,47 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
 
             if (usersToCheck.length === 0) return;
 
-            this.logger.log(`[${chainName}] Checking health factors for ${usersToCheck.length}/${activeLoansMap.size} active checkable loans...`);
+            // 将用户分批处理，每批最多 100 个
+            const BATCH_SIZE = 100;
+            for (let i = 0; i < usersToCheck.length; i += BATCH_SIZE) {
+                const batchUsers = usersToCheck.slice(i, i + BATCH_SIZE);
+                this.logger.log(`[${chainName}] Checking health factors for batch ${i / BATCH_SIZE + 1}/${Math.ceil(usersToCheck.length / BATCH_SIZE)} (${batchUsers.length}/${usersToCheck.length} users)...`);
 
-            const contract = this.getContract(chainName);
-            const accountDataMap = await this.getUserAccountDataBatch(contract, usersToCheck);
+                const contract = this.getContract(chainName);
+                const accountDataMap = await this.getUserAccountDataBatch(contract, batchUsers);
 
-            for (const user of usersToCheck) {
-                const accountData = accountDataMap.get(user);
-                if (!accountData) continue;
+                for (const user of batchUsers) {
+                    const accountData = accountDataMap.get(user);
+                    if (!accountData) continue;
 
-                const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
-                const totalDebt = Number(ethers.formatUnits(accountData.totalDebtBase, 8));
+                    const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
+                    const totalDebt = Number(ethers.formatUnits(accountData.totalDebtBase, 8));
 
-                // 如果总债务等于 0，则从内存和数据库中移除该用户
-                if (totalDebt === 0) {
-                    activeLoansMap.delete(user);
-                    await this.databaseService.deactivateLoan(chainName, user);
-                    this.logger.log(`[${chainName}] Removed user ${user} from active loans and database as total debt is 0`);
-                    continue;
+                    // 如果总债务等于 0，则从内存和数据库中移除该用户
+                    if (totalDebt === 0) {
+                        activeLoansMap.delete(user);
+                        await this.databaseService.deactivateLoan(chainName, user);
+                        this.logger.log(`[${chainName}] Removed user ${user} from active loans and database as total debt is 0`);
+                        continue;
+                    }
+
+                    // 如果健康因子低于健康阈值，记录日志
+                    if (healthFactor <= this.HEALTH_FACTOR_THRESHOLD) {
+                        this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.HEALTH_FACTOR_THRESHOLD} reached for user ${user}`);
+                    }
+
+                    // 更新下次检查时间
+                    const waitTime = this.calculateWaitTime(healthFactor);
+                    const nextCheckTime = new Date(Date.now() + waitTime);
+                    const formattedDate = this.formatDate(nextCheckTime);
+                    this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate}), healthFactor: ${healthFactor}`);
+
+                    // 更新内存中的健康因子和下次检查时间
+                    activeLoansMap.set(user, {
+                        nextCheckTime: new Date(Date.now() + waitTime),
+                        healthFactor: healthFactor
+                    });
                 }
-
-                // 如果健康因子低于健康阈值，记录日志
-                if (healthFactor <= this.HEALTH_FACTOR_THRESHOLD) {
-                    this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.HEALTH_FACTOR_THRESHOLD} reached for user ${user}`);
-                }
-
-                // 更新下次检查时间
-                const waitTime = this.calculateWaitTime(healthFactor);
-                const nextCheckTime = new Date(Date.now() + waitTime);
-                const formattedDate = this.formatDate(nextCheckTime);
-                this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate}), healthFactor: ${healthFactor}`);
-
-                // 更新内存中的健康因子和下次检查时间
-                activeLoansMap.set(user, {
-                    nextCheckTime: new Date(Date.now() + waitTime),
-                    healthFactor: healthFactor
-                });
             }
         } catch (error) {
             this.logger.error(`[${chainName}] Error checking health factors batch: ${error.message}`);
