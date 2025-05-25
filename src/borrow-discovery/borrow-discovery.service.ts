@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '../database/database.service';
 import * as fs from 'fs';
 import * as path from 'path';
+import fetch from 'node-fetch';
 
 interface UserAccountData {
     totalCollateralBase: bigint;
@@ -605,7 +606,11 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             }
 
             // 4. 对最大债务资产执行清算
-            this.logger.log(`[${chainName}] Executing liquidation for user ${user}, maxDebtAsset: ${maxDebtAsset.asset}, debtAmount: ${maxDebtAmount}`);
+            const shouldClose = await this.checkAndCloseLowValueLoan(chainName, user, maxDebtAsset, maxDebtAmount);
+            if (shouldClose) {
+                return;
+            }
+
             // try {
             //     const hasVariableDebt = maxDebtAsset.currentVariableDebt > BigInt(0);
             //     const debtAmount = hasVariableDebt
@@ -643,6 +648,70 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             // }
         } catch (error) {
             this.logger.error(`[${chainName}] Error executing liquidation for user ${user}: ${error.message}`);
+        }
+    }
+
+    private async checkAndCloseLowValueLoan(chainName: string, user: string, maxDebtAsset: any, maxDebtAmount: bigint) {
+        try {
+            // maxDebtAsset.asset是 token地址，需要转换为symbol
+            const tokenAddress = maxDebtAsset.asset;
+            const provider = await this.chainService.getProvider(chainName);
+            const tokenInfo = await this.getTokenInfo(chainName, tokenAddress, provider);
+            const price = await this.getTokenPrice(tokenInfo.symbol);
+            // 计算债务价值, 要计算 decimals
+            const debtValueInUsd = Number(maxDebtAmount) * price / 10 ** tokenInfo.decimals;
+            this.logger.log(`[${chainName}] Executing liquidation for user ${user}, maxDebtAsset: ${maxDebtAsset.asset}, debtAmount: ${maxDebtAmount}, debtValueInUsd: ${debtValueInUsd}`);
+
+            if (debtValueInUsd < 1) {
+                this.logger.log(`[${chainName}] Closing loan for user ${user} due to low debt value: ${debtValueInUsd} USDC`);
+                await this.databaseService.prisma.loan.update({
+                    where: {
+                        chainName_user: {
+                            chainName,
+                            user: user.toLowerCase(),
+                        },
+                    },
+                    data: {
+                        isActive: false,
+                        updatedAt: new Date(),
+                    },
+                });
+                return true;
+            }
+            return false;
+        } catch (error) {
+            this.logger.error(`Error checking debt value for user ${user}: ${error.message}`);
+            return false;
+        }
+    }
+
+    private async getTokenPrice(symbol: string): Promise<number> {
+        if (symbol === 'USDC') {
+            return 1;
+        }
+
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 2000); // 2秒超时
+
+            const response = await fetch(
+                `https://api.bybit.com/v5/market/tickers?symbol=${symbol}USDC&category=spot`,
+                { signal: controller.signal }
+            );
+            clearTimeout(timeoutId);
+
+            const data = await response.json();
+            if (data.retCode === 0 && data.result.list && data.result.list.length > 0) {
+                return parseFloat(data.result.list[0].lastPrice);
+            }
+            throw new Error(`Failed to get price for ${symbol}`);
+        } catch (error) {
+            if (error.name === 'AbortError') {
+                this.logger.error(`Timeout getting price for ${symbol}`);
+                throw new Error(`Timeout getting price for ${symbol}`);
+            }
+            this.logger.error(`Error getting price for ${symbol}: ${error.message}`);
+            throw error;
         }
     }
 

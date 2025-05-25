@@ -38,5 +38,7 @@ export declare class BorrowDiscoveryService implements OnModuleInit, OnModuleDes
     private calculateHealthFactor;
     private calculateWaitTime;
     private executeLiquidation;
+    private checkAndCloseLowValueLoan;
+    private getTokenPrice;
     onModuleDestroy(): Promise<void>;
 }

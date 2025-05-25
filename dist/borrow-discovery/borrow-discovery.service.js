@@ -18,6 +18,7 @@ const config_1 = require("@nestjs/config");
 const database_service_1 = require("../database/database.service");
 const fs = require("fs");
 const path = require("path");
+const node_fetch_1 = require("node-fetch");
 let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoveryService {
     constructor(chainService, configService, databaseService) {
         this.chainService = chainService;
@@ -408,7 +409,6 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
     }
     async executeLiquidation(chainName, user, contract) {
         try {
-            this.logger.log(`[${chainName}] Executing liquidation for user ${user}`);
             const userConfig = await contract.getUserConfiguration(user);
             const reservesList = await contract.getReservesList();
             const multicallAddress = '0xcA11bde05977b3631167028862bE2a173976CA11';
@@ -457,10 +457,68 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                 this.logger.log(`[${chainName}] No debt found for user ${user}`);
                 return;
             }
-            this.logger.log(`[${chainName}] Executing liquidation for user ${user}, maxDebtAsset: ${maxDebtAsset.asset}, debtAmount: ${maxDebtAmount}`);
+            const shouldClose = await this.checkAndCloseLowValueLoan(chainName, user, maxDebtAsset, maxDebtAmount);
+            if (shouldClose) {
+                return;
+            }
         }
         catch (error) {
             this.logger.error(`[${chainName}] Error executing liquidation for user ${user}: ${error.message}`);
+        }
+    }
+    async checkAndCloseLowValueLoan(chainName, user, maxDebtAsset, maxDebtAmount) {
+        try {
+            const tokenAddress = maxDebtAsset.asset;
+            const provider = await this.chainService.getProvider(chainName);
+            const tokenInfo = await this.getTokenInfo(chainName, tokenAddress, provider);
+            const price = await this.getTokenPrice(tokenInfo.symbol);
+            const debtValueInUsd = Number(maxDebtAmount) * price / 10 ** tokenInfo.decimals;
+            this.logger.log(`[${chainName}] Executing liquidation for user ${user}, maxDebtAsset: ${maxDebtAsset.asset}, debtAmount: ${maxDebtAmount}, debtValueInUsd: ${debtValueInUsd}`);
+            if (debtValueInUsd < 1) {
+                this.logger.log(`[${chainName}] Closing loan for user ${user} due to low debt value: ${debtValueInUsd} USDC`);
+                await this.databaseService.prisma.loan.update({
+                    where: {
+                        chainName_user: {
+                            chainName,
+                            user: user.toLowerCase(),
+                        },
+                    },
+                    data: {
+                        isActive: false,
+                        updatedAt: new Date(),
+                    },
+                });
+                return true;
+            }
+            return false;
+        }
+        catch (error) {
+            this.logger.error(`Error checking debt value for user ${user}: ${error.message}`);
+            return false;
+        }
+    }
+    async getTokenPrice(symbol) {
+        if (symbol === 'USDC') {
+            return 1;
+        }
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 2000);
+            const response = await (0, node_fetch_1.default)(`https://api.bybit.com/v5/market/tickers?symbol=${symbol}USDC&category=spot`, { signal: controller.signal });
+            clearTimeout(timeoutId);
+            const data = await response.json();
+            if (data.retCode === 0 && data.result.list && data.result.list.length > 0) {
+                return parseFloat(data.result.list[0].lastPrice);
+            }
+            throw new Error(`Failed to get price for ${symbol}`);
+        }
+        catch (error) {
+            if (error.name === 'AbortError') {
+                this.logger.error(`Timeout getting price for ${symbol}`);
+                throw new Error(`Timeout getting price for ${symbol}`);
+            }
+            this.logger.error(`Error getting price for ${symbol}: ${error.message}`);
+            throw error;
         }
     }
     async onModuleDestroy() {
