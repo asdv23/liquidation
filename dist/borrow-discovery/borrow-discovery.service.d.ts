@@ -20,10 +20,12 @@ export declare class BorrowDiscoveryService implements OnModuleInit, OnModuleDes
     private contractCache;
     private providerCache;
     private signerCache;
+    private dataProviderCache;
     constructor(chainService: ChainService, configService: ConfigService, databaseService: DatabaseService);
     onModuleInit(): Promise<void>;
     private initializeResources;
     private getContract;
+    private getDataProvider;
     private loadTokenCache;
     private getTokenInfo;
     private formatAmount;

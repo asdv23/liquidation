@@ -32,6 +32,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         this.contractCache = new Map();
         this.providerCache = new Map();
         this.signerCache = new Map();
+        this.dataProviderCache = new Map();
         this.MIN_WAIT_TIME = this.configService.get('MIN_CHECK_INTERVAL', 1000);
         this.MAX_WAIT_TIME = this.configService.get('MAX_CHECK_INTERVAL', 30 * 60 * 1000);
         this.PRIVATE_KEY = this.configService.get('PRIVATE_KEY');
@@ -57,7 +58,18 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                 const abi = JSON.parse(fs.readFileSync(abiPath, 'utf8'));
                 const contract = new ethers_1.ethers.Contract(config.contracts.lendingPool, abi, signer);
                 this.contractCache.set(chainName, contract);
-                this.logger.log(`[${chainName}] Initialized provider, signer and contract`);
+                const addressesProviderAddress = await contract.ADDRESSES_PROVIDER();
+                const addressesProviderAbi = [
+                    'function getPoolDataProvider() view returns (address)'
+                ];
+                const addressesProvider = new ethers_1.ethers.Contract(addressesProviderAddress, addressesProviderAbi, signer);
+                const dataProviderAddress = await addressesProvider.getPoolDataProvider();
+                const dataProviderAbi = [
+                    'function getUserReserveData(address asset, address user) view returns (uint256 currentATokenBalance, uint256 currentStableDebt, uint256 currentVariableDebt, uint256 principalStableDebt, uint256 scaledVariableDebt, uint256 stableBorrowRate, uint256 liquidityRate, uint40 stableRateLastUpdated, bool usageAsCollateralEnabled)'
+                ];
+                const dataProvider = new ethers_1.ethers.Contract(dataProviderAddress, dataProviderAbi, signer);
+                this.dataProviderCache.set(chainName, dataProvider);
+                this.logger.log(`[${chainName}] Initialized provider, signer, contract and dataProvider`);
             }
             catch (error) {
                 this.logger.error(`[${chainName}] Failed to initialize resources: ${error.message}`);
@@ -70,6 +82,13 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             throw new Error(`Contract not initialized for chain ${chainName}`);
         }
         return contract;
+    }
+    getDataProvider(chainName) {
+        const dataProvider = this.dataProviderCache.get(chainName);
+        if (!dataProvider) {
+            throw new Error(`DataProvider not initialized for chain ${chainName}`);
+        }
+        return dataProvider;
     }
     async loadTokenCache() {
         try {
@@ -390,30 +409,55 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
     async executeLiquidation(chainName, user, contract) {
         try {
             this.logger.log(`[${chainName}] Executing liquidation for user ${user}`);
-            const userReserves = await contract.getUserReservesData(user);
-            const debtReserve = userReserves.find(reserve => reserve.currentStableDebt > 0 || reserve.currentVariableDebt > 0);
-            if (!debtReserve) {
+            const userConfig = await contract.getUserConfiguration(user);
+            const reservesList = await contract.getReservesList();
+            const multicallAddress = '0xcA11bde05977b3631167028862bE2a173976CA11';
+            const multicallAbi = [
+                'function aggregate(tuple(address target, bytes callData)[] calls) view returns (uint256 blockNumber, bytes[] returnData)'
+            ];
+            const multicallContract = new ethers_1.ethers.Contract(multicallAddress, multicallAbi, contract.runner);
+            const dataProvider = this.getDataProvider(chainName);
+            const calls = [];
+            const borrowingAssets = [];
+            for (let i = 0; i < reservesList.length; i++) {
+                const asset = reservesList[i];
+                const isBorrowing = (BigInt(userConfig.data) >> (BigInt(i) << BigInt(1))) !== BigInt(0);
+                if (isBorrowing) {
+                    borrowingAssets.push(asset);
+                    calls.push({
+                        target: dataProvider.target,
+                        callData: dataProvider.interface.encodeFunctionData('getUserReserveData', [asset, user])
+                    });
+                }
+            }
+            if (calls.length === 0) {
+                this.logger.log(`[${chainName}] No borrowing assets found for user ${user}`);
+                return;
+            }
+            const [, returnData] = await multicallContract.aggregate(calls);
+            let maxDebtAsset = null;
+            let maxDebtAmount = BigInt(0);
+            for (let i = 0; i < borrowingAssets.length; i++) {
+                const asset = borrowingAssets[i];
+                const userReserveData = dataProvider.interface.decodeFunctionResult('getUserReserveData', returnData[i]);
+                const currentStableDebt = BigInt(userReserveData.currentStableDebt);
+                const currentVariableDebt = BigInt(userReserveData.currentVariableDebt);
+                const totalDebt = currentStableDebt + currentVariableDebt;
+                if (totalDebt > maxDebtAmount) {
+                    maxDebtAmount = totalDebt;
+                    maxDebtAsset = {
+                        asset,
+                        currentStableDebt,
+                        currentVariableDebt,
+                        usageAsCollateralEnabled: userReserveData.usageAsCollateralEnabled
+                    };
+                }
+            }
+            if (!maxDebtAsset) {
                 this.logger.log(`[${chainName}] No debt found for user ${user}`);
                 return;
             }
-            const debtAmount = debtReserve.currentStableDebt > 0 ?
-                debtReserve.currentStableDebt :
-                debtReserve.currentVariableDebt;
-            const liquidationBonus = await contract.getLiquidationBonus(debtReserve.asset);
-            const bonusAmount = (debtAmount * BigInt(liquidationBonus)) / BigInt(10000);
-            const expectedProfit = Number(ethers_1.ethers.formatUnits(bonusAmount, 18)) / Number(ethers_1.ethers.formatUnits(debtAmount, 18));
-            this.logger.log(`[${chainName}] Expected profit ${expectedProfit}`);
-            const flashLoanParams = {
-                receiverAddress: contract.target,
-                asset: debtReserve.asset,
-                amount: debtAmount,
-                params: ethers_1.ethers.AbiCoder.defaultAbiCoder().encode(['address', 'bool'], [user, false]),
-                referralCode: 0
-            };
-            const tx = await contract.flashLoanSimple(flashLoanParams.receiverAddress, flashLoanParams.asset, flashLoanParams.amount, flashLoanParams.params, flashLoanParams.referralCode);
-            this.logger.log(`[${chainName}] Liquidation transaction sent: ${tx.hash}`);
-            const receipt = await tx.wait();
-            this.logger.log(`[${chainName}] Liquidation transaction confirmed: ${receipt.hash}`);
+            this.logger.log(`[${chainName}] Executing liquidation for user ${user}, maxDebtAsset: ${maxDebtAsset.asset}, debtAmount: ${maxDebtAmount}`);
         }
         catch (error) {
             this.logger.error(`[${chainName}] Error executing liquidation for user ${user}: ${error.message}`);
