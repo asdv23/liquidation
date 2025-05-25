@@ -199,7 +199,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                     for (const loan of activeLoans) {
                         activeLoansMap.set(loan.user, {
                             nextCheckTime: now, // 设置为当前时间，确保立即检查
-                            healthFactor: loan.healthFactor
+                            healthFactor: 1.0 // 假设健康因子为1.0，需要根据实际情况更新
                         });
                     }
 
@@ -284,8 +284,8 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                             if (activeLoansMap) {
                                 // 设置初始检查时间为现在，让健康因子检查器立即检查
                                 activeLoansMap.set(onBehalfOf, {
-                                    nextCheckTime: new Date(),
-                                    healthFactor: 0 // 初始值，由健康因子检查器更新
+                                    nextCheckTime: new Date(), // 设置为当前时间，确保立即检查
+                                    healthFactor: 1.0
                                 });
                             }
 
@@ -419,7 +419,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
 
             const now = new Date();
             const usersToCheck = Array.from(activeLoansMap.entries())
-                .filter(([_, info]) => info.nextCheckTime <= now)
+                .filter(([_, info]) => info.healthFactor <= this.LIQUIDATION_THRESHOLD)
                 .map(([user]) => user);
 
             if (usersToCheck.length === 0) return;
@@ -457,8 +457,8 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
 
                 // 更新内存中的健康因子和下次检查时间
                 activeLoansMap.set(user, {
-                    healthFactor,
-                    nextCheckTime
+                    nextCheckTime: new Date(Date.now() + waitTime),
+                    healthFactor: healthFactor
                 });
             }
         } catch (error) {

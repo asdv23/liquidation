@@ -155,7 +155,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                     for (const loan of activeLoans) {
                         activeLoansMap.set(loan.user, {
                             nextCheckTime: now,
-                            healthFactor: loan.healthFactor
+                            healthFactor: 1.0
                         });
                     }
                     this.logger.log(`[${chainName}] Loaded ${activeLoansMap.size} active loans into memory, will check immediately`);
@@ -221,7 +221,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                             if (activeLoansMap) {
                                 activeLoansMap.set(onBehalfOf, {
                                     nextCheckTime: new Date(),
-                                    healthFactor: 0
+                                    healthFactor: 1.0
                                 });
                             }
                             await this.databaseService.createOrUpdateLoan(chainName, onBehalfOf);
@@ -329,7 +329,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                 return;
             const now = new Date();
             const usersToCheck = Array.from(activeLoansMap.entries())
-                .filter(([_, info]) => info.nextCheckTime <= now)
+                .filter(([_, info]) => info.healthFactor <= this.LIQUIDATION_THRESHOLD)
                 .map(([user]) => user);
             if (usersToCheck.length === 0)
                 return;
@@ -356,8 +356,8 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                 const formattedDate = this.formatDate(nextCheckTime);
                 this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate})`);
                 activeLoansMap.set(user, {
-                    healthFactor,
-                    nextCheckTime
+                    nextCheckTime: new Date(Date.now() + waitTime),
+                    healthFactor: healthFactor
                 });
             }
         }

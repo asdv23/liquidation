@@ -11,8 +11,6 @@ model Loan {
   id        Int      @id @default(autoincrement())
   chainName String   // 链名称
   user      String   // 借款人地址
-  healthFactor Float // 健康因子
-  lastCheckTime DateTime @default(now()) // 最后检查时间
   isActive  Boolean  @default(true) // 是否活跃
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

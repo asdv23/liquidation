@@ -225,8 +225,7 @@ export class DatabaseService implements OnModuleInit {
                 create: {
                     chainName,
                     user: user.toLowerCase(),
-                    isActive: true,
-                    healthFactor: 0
+                    isActive: true
                 },
             });
         } catch (error) {

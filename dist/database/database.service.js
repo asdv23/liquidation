@@ -216,8 +216,7 @@ let DatabaseService = DatabaseService_1 = class DatabaseService {
                 create: {
                     chainName,
                     user: user.toLowerCase(),
-                    isActive: true,
-                    healthFactor: 0
+                    isActive: true
                 },
             });
         }

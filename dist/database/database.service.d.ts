@@ -10,8 +10,6 @@ export declare class DatabaseService implements OnModuleInit {
         id: number;
         chainName: string;
         user: string;
-        healthFactor: number;
-        lastCheckTime: Date;
         isActive: boolean;
         createdAt: Date;
         updatedAt: Date;
@@ -25,8 +23,6 @@ export declare class DatabaseService implements OnModuleInit {
         id: number;
         chainName: string;
         user: string;
-        healthFactor: number;
-        lastCheckTime: Date;
         isActive: boolean;
         createdAt: Date;
         updatedAt: Date;
@@ -40,8 +36,6 @@ export declare class DatabaseService implements OnModuleInit {
         id: number;
         chainName: string;
         user: string;
-        healthFactor: number;
-        lastCheckTime: Date;
         isActive: boolean;
         createdAt: Date;
         updatedAt: Date;
@@ -55,8 +49,6 @@ export declare class DatabaseService implements OnModuleInit {
         id: number;
         chainName: string;
         user: string;
-        healthFactor: number;
-        lastCheckTime: Date;
         isActive: boolean;
         createdAt: Date;
         updatedAt: Date;
@@ -70,8 +62,6 @@ export declare class DatabaseService implements OnModuleInit {
         id: number;
         chainName: string;
         user: string;
-        healthFactor: number;
-        lastCheckTime: Date;
         isActive: boolean;
         createdAt: Date;
         updatedAt: Date;
