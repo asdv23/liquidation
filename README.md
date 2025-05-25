@@ -63,13 +63,11 @@ BorrowDiscoveryService 负责监听以下事件：
 ### 开发环境（SQLite）
 ```
 DATABASE_URL="file:memory:"
-POLLING_INTERVAL=300000  # 5分钟
 ```
 
 ### 生产环境（PostgreSQL）
 ```
 DATABASE_URL="postgresql://user:password@localhost:5432/liquidation_bot"
-POLLING_INTERVAL=300000  # 5分钟
 ```
 
 ## 启动项目

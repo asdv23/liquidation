@@ -17,8 +17,13 @@ export declare class BorrowDiscoveryService implements OnModuleInit, OnModuleDes
     private readonly MAX_WAIT_TIME;
     private checkInterval;
     private heartbeatInterval;
+    private contractCache;
+    private providerCache;
     constructor(chainService: ChainService, configService: ConfigService, databaseService: DatabaseService);
     onModuleInit(): Promise<void>;
+    private initializeResources;
+    private getContract;
+    private getProvider;
     private loadTokenCache;
     private getTokenInfo;
     private formatAmount;
@@ -28,11 +33,10 @@ export declare class BorrowDiscoveryService implements OnModuleInit, OnModuleDes
     private startHeartbeat;
     private formatDate;
     private printHeartbeat;
-    private checkHealthFactor;
-    private getUserAccountData;
+    private checkHealthFactorsBatch;
+    private getUserAccountDataBatch;
     private calculateHealthFactor;
     private calculateWaitTime;
     private executeLiquidation;
-    private recordLiquidationTime;
     onModuleDestroy(): Promise<void>;
 }

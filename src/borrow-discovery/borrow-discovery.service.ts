@@ -21,19 +21,26 @@ interface TokenInfo {
     decimals: number;
 }
 
+interface LoanInfo {
+    nextCheckTime: Date;
+    healthFactor: number;
+}
+
 @Injectable()
 export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
     private readonly logger = new Logger(BorrowDiscoveryService.name);
-    private activeLoans: Map<string, Set<string>> = new Map();
+    private activeLoans: Map<string, Map<string, LoanInfo>> = new Map();
     private liquidationTimes: Map<string, Map<string, number>> = new Map();
     private tokenCache: Map<string, Map<string, TokenInfo>> = new Map();
-    private readonly LIQUIDATION_THRESHOLD = 1.05; // 清算阈值
-    private readonly CRITICAL_THRESHOLD = 1.1; // 危险阈值
-    private readonly HEALTH_FACTOR_THRESHOLD = 1.2; // 健康阈值
+    private readonly LIQUIDATION_THRESHOLD = 1.005; // 清算阈值
+    private readonly CRITICAL_THRESHOLD = 1.01; // 危险阈值
+    private readonly HEALTH_FACTOR_THRESHOLD = 1.02; // 健康阈值
     private readonly MIN_WAIT_TIME: number; // 最小等待时间（毫秒）
     private readonly MAX_WAIT_TIME: number; // 最大等待时间（毫秒）
     private checkInterval: NodeJS.Timeout;
     private heartbeatInterval: NodeJS.Timeout; // 心跳定时器
+    private contractCache: Map<string, ethers.Contract> = new Map(); // 合约缓存
+    private providerCache: Map<string, ethers.Provider> = new Map(); // Provider 缓存
 
     constructor(
         private readonly chainService: ChainService,
@@ -41,17 +48,60 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         private readonly databaseService: DatabaseService,
     ) {
         // 从环境变量读取配置，默认值：最小200ms，最大30分钟
-        this.MIN_WAIT_TIME = this.configService.get<number>('MIN_CHECK_INTERVAL', 200);
+        this.MIN_WAIT_TIME = this.configService.get<number>('MIN_CHECK_INTERVAL', 1000);
         this.MAX_WAIT_TIME = this.configService.get<number>('MAX_CHECK_INTERVAL', 30 * 60 * 1000);
     }
 
     async onModuleInit() {
         this.logger.log('BorrowDiscoveryService initializing...');
+        await this.initializeResources();
         await this.loadTokenCache();
         await this.loadActiveLoans();
         await this.startListening();
         this.startHealthFactorChecker();
         this.startHeartbeat();
+    }
+
+    private async initializeResources() {
+        const chains = this.chainService.getActiveChains();
+        for (const chainName of chains) {
+            try {
+                // 初始化 provider
+                const provider = await this.chainService.getProvider(chainName);
+                this.providerCache.set(chainName, provider);
+
+                // 初始化合约
+                const config = this.chainService.getChainConfig(chainName);
+                const abiPath = path.join(process.cwd(), 'abi', `${chainName.toUpperCase()}_AAVE_V3_POOL_ABI.json`);
+                const abi = JSON.parse(fs.readFileSync(abiPath, 'utf8'));
+                const contract = new ethers.Contract(
+                    config.contracts.lendingPool,
+                    abi,
+                    provider as ethers.ContractRunner
+                );
+                this.contractCache.set(chainName, contract);
+
+                this.logger.log(`[${chainName}] Initialized provider and contract`);
+            } catch (error) {
+                this.logger.error(`[${chainName}] Failed to initialize resources: ${error.message}`);
+            }
+        }
+    }
+
+    private getContract(chainName: string): ethers.Contract {
+        const contract = this.contractCache.get(chainName);
+        if (!contract) {
+            throw new Error(`Contract not initialized for chain ${chainName}`);
+        }
+        return contract;
+    }
+
+    private getProvider(chainName: string): ethers.Provider {
+        const provider = this.providerCache.get(chainName);
+        if (!provider) {
+            throw new Error(`Provider not initialized for chain ${chainName}`);
+        }
+        return provider;
     }
 
     private async loadTokenCache() {
@@ -136,23 +186,24 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 this.logger.log(`[${chainName}] Found ${activeLoans.length} active loans in database`);
 
                 if (activeLoans.length > 0) {
-                    this.logger.log(`[${chainName}] Checking health factors for ${activeLoans.length} active loans...`);
+                    this.logger.log(`[${chainName}] Loading active loans into memory...`);
 
-                    // 获取合约实例
-                    const provider = await this.chainService.getProvider(chainName);
-                    const config = this.chainService.getChainConfig(chainName);
-                    const abiPath = path.join(process.cwd(), 'abi', `${chainName.toUpperCase()}_AAVE_V3_POOL_ABI.json`);
-                    const abi = JSON.parse(fs.readFileSync(abiPath, 'utf8'));
-                    const contract = new ethers.Contract(
-                        config.contracts.lendingPool,
-                        abi,
-                        provider
-                    );
-
-                    // 检查每个活跃借款的健康因子
-                    for (const loan of activeLoans) {
-                        this.checkHealthFactor(chainName, loan.user, contract);
+                    // 初始化内存中的活跃贷款集合
+                    if (!this.activeLoans.has(chainName)) {
+                        this.activeLoans.set(chainName, new Map());
                     }
+                    const activeLoansMap = this.activeLoans.get(chainName);
+
+                    // 将数据库中的活跃贷款加载到内存，设置 nextCheckTime 为当前时间
+                    const now = new Date();
+                    for (const loan of activeLoans) {
+                        activeLoansMap.set(loan.user, {
+                            nextCheckTime: now, // 设置为当前时间，确保立即检查
+                            healthFactor: loan.healthFactor
+                        });
+                    }
+
+                    this.logger.log(`[${chainName}] Loaded ${activeLoansMap.size} active loans into memory, will check immediately`);
                 }
             }
         } catch (error) {
@@ -225,19 +276,24 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                             this.logger.log(`- Referral Code: ${referralCode}`);
                             this.logger.log(`- Transaction Hash: ${event?.transactionHash || event?.log?.transactionHash}`);
 
+                            // 更新内存中的活跃贷款集合
                             if (!this.activeLoans.has(chainName)) {
-                                this.activeLoans.set(chainName, new Set());
+                                this.activeLoans.set(chainName, new Map());
                             }
-                            const activeLoansSet = this.activeLoans.get(chainName);
-                            if (activeLoansSet) {
-                                activeLoansSet.add(onBehalfOf);
+                            const activeLoansMap = this.activeLoans.get(chainName);
+                            if (activeLoansMap) {
+                                // 设置初始检查时间为现在，让健康因子检查器立即检查
+                                activeLoansMap.set(onBehalfOf, {
+                                    nextCheckTime: new Date(),
+                                    healthFactor: 0 // 初始值，由健康因子检查器更新
+                                });
                             }
 
                             // 创建贷款记录
                             await this.databaseService.createOrUpdateLoan(
                                 chainName,
                                 onBehalfOf,
-                                0
+                                0 // 初始值，由健康因子检查器更新
                             );
 
                             this.logger.log(`[${chainName}] Created/Updated loan record for user ${onBehalfOf}`);
@@ -250,31 +306,6 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 } catch (error) {
                     this.logger.error(`[${chainName}] Failed to set up Borrow event listener: ${error.message}`);
                 }
-
-                // 监听 Repay 事件
-                contract.on('Repay', async (reserve, user, repayer, amount, useATokens, event) => {
-                    try {
-                        const tokenInfo = await this.getTokenInfo(chainName, reserve, provider);
-                        this.logger.log(`[${chainName}] Repay event detected:`);
-                        this.logger.log(`- Reserve: ${reserve} (${tokenInfo.symbol})`);
-                        this.logger.log(`- User: ${user}`);
-                        this.logger.log(`- Repayer: ${repayer}`);
-                        this.logger.log(`- Amount: ${this.formatAmount(amount, tokenInfo.decimals)} ${tokenInfo.symbol}`);
-                        this.logger.log(`- Use ATokens: ${useATokens}`);
-                        this.logger.log(`- Transaction Hash: ${event?.transactionHash || event?.log?.transactionHash}`);
-
-
-                        // 检查贷款记录是否存在
-                        const activeLoans = await this.databaseService.getActiveLoans(chainName);
-                        const loanExists = activeLoans.some(loan => loan.user.toLowerCase() === user.toLowerCase());
-                        if (!loanExists) {
-                            // 如果贷款记录不存在，记录告警
-                            this.logger.warn(`[${chainName}] Received Repay event for non-existent loan: user=${user}, amount=${this.formatAmount(amount, tokenInfo.decimals)} ${tokenInfo.symbol}`);
-                        }
-                    } catch (error) {
-                        this.logger.error(`[${chainName}] Error processing Repay event: ${error.message}`);
-                    }
-                });
 
                 // 监听 LiquidationCall 事件
                 contract.on('LiquidationCall', async (collateralAsset, debtAsset, user, debtToCover, liquidatedCollateralAmount, liquidator, receiveAToken, event) => {
@@ -293,16 +324,6 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                         this.logger.log(`- Receive AToken: ${receiveAToken}`);
                         this.logger.log(`- Transaction Hash: ${event?.transactionHash || event?.log?.transactionHash}`);
 
-                        // 获取用户账户数据
-                        const accountData = await this.getUserAccountData(contract, user);
-                        if (!accountData) {
-                            this.logger.warn(`[${chainName}] Could not get account data for user ${user}`);
-                            return;
-                        }
-
-                        const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
-                        const totalDebt = Number(ethers.formatUnits(accountData.totalDebtBase, 8));
-
                         // 记录清算信息
                         await this.databaseService.recordLiquidation(
                             chainName,
@@ -312,13 +333,11 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                         );
 
                         this.logger.log(`[${chainName}] Recorded liquidation for user ${user}`);
-                        this.logger.log(`[${chainName}] Final health factor: ${healthFactor}`);
-                        this.logger.log(`[${chainName}] Final total debt: ${totalDebt.toFixed(2)} USD`);
 
                         // 从内存中移除该贷款
-                        const activeLoansSet = this.activeLoans.get(chainName);
-                        if (activeLoansSet) {
-                            activeLoansSet.delete(user);
+                        const activeLoansMap = this.activeLoans.get(chainName);
+                        if (activeLoansMap) {
+                            activeLoansMap.delete(user);
                         }
                     } catch (error) {
                         this.logger.error(`[${chainName}] Error processing LiquidationCall event: ${error.message}`);
@@ -333,26 +352,31 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
     }
 
     private startHealthFactorChecker() {
-        // 每分钟检查一次需要更新的贷款
-        this.checkInterval = setInterval(async () => {
+        let isChecking = false;
+
+        const checkAllLoans = async () => {
+            if (isChecking) {
+                return;
+            }
+
+            isChecking = true;
             try {
-                const loansToCheck = await this.databaseService.getLoansToCheck();
-                for (const loan of loansToCheck) {
-                    const provider = await this.chainService.getProvider(loan.chainName);
-                    const config = this.chainService.getChainConfig(loan.chainName);
-                    const abiPath = path.join(process.cwd(), 'abi', `${loan.chainName.toUpperCase()}_AAVE_V3_POOL_ABI.json`);
-                    const abi = JSON.parse(fs.readFileSync(abiPath, 'utf8'));
-                    const contract = new ethers.Contract(
-                        config.contracts.lendingPool,
-                        abi,
-                        provider
-                    );
-                    await this.checkHealthFactor(loan.chainName, loan.user, contract);
+                // 从内存中获取所有需要检查的贷款
+                for (const chainName of this.activeLoans.keys()) {
+                    await this.checkHealthFactorsBatch(chainName);
                 }
             } catch (error) {
                 this.logger.error(`Error in health factor checker: ${error.message}`);
+            } finally {
+                isChecking = false;
             }
-        }, 60000); // 每分钟检查一次
+        };
+
+        // 立即执行一次检查
+        checkAllLoans();
+
+        // 设置定时器，每最小检查间隔执行一次
+        this.checkInterval = setInterval(checkAllLoans, this.MIN_WAIT_TIME);
     }
 
     private startHeartbeat() {
@@ -392,67 +416,96 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         }
     }
 
-    private async checkHealthFactor(chainName: string, user: string, contract: ethers.Contract) {
+    private async checkHealthFactorsBatch(chainName: string) {
         try {
-            const accountData = await this.getUserAccountData(contract, user);
-            if (!accountData) return;
+            const activeLoansMap = this.activeLoans.get(chainName);
+            if (!activeLoansMap || activeLoansMap.size === 0) return;
 
-            const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
-            const totalDebt = Number(ethers.formatUnits(accountData.totalDebtBase, 8));
-            this.logger.log(`[${chainName}] User ${user} health factor: ${healthFactor}`);
-            this.logger.log(`[${chainName}] User ${user} total debt: ${totalDebt.toFixed(2)} USD`);
+            const now = new Date();
+            const usersToCheck = Array.from(activeLoansMap.entries())
+                .filter(([_, info]) => info.nextCheckTime <= now)
+                .map(([user]) => user);
 
-            // 如果总债务等于 0，则关闭此用户借款
-            if (totalDebt === 0) {
-                await this.databaseService.deactivateLoan(chainName, user);
-                this.logger.log(`[${chainName}] Deactivated loan for user ${user} as total debt is 0`);
-                return;
+            if (usersToCheck.length === 0) return;
+
+            this.logger.log(`[${chainName}] Checking health factors for ${usersToCheck.length}/${activeLoansMap.size} active checkable loans...`);
+
+            const contract = this.getContract(chainName);
+            const accountDataMap = await this.getUserAccountDataBatch(contract, usersToCheck);
+
+            for (const user of usersToCheck) {
+                const accountData = accountDataMap.get(user);
+                if (!accountData) continue;
+
+                const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
+                const totalDebt = Number(ethers.formatUnits(accountData.totalDebtBase, 8));
+
+                // 如果总债务等于 0，则从内存和数据库中移除该用户
+                if (totalDebt === 0) {
+                    activeLoansMap.delete(user);
+                    await this.databaseService.deactivateLoan(chainName, user);
+                    this.logger.log(`[${chainName}] Removed user ${user} from active loans and database as total debt is 0`);
+                    continue;
+                }
+
+                // 如果健康因子低于清算阈值，记录日志
+                if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
+                    this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}`);
+                }
+
+                // 更新下次检查时间
+                const waitTime = this.calculateWaitTime(healthFactor);
+                const nextCheckTime = new Date(Date.now() + waitTime);
+                const formattedDate = this.formatDate(nextCheckTime);
+                this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate})`);
+
+                // 更新内存中的健康因子和下次检查时间
+                activeLoansMap.set(user, {
+                    healthFactor,
+                    nextCheckTime
+                });
             }
-
-            // 否则，计算下次检查的等待时间（毫秒）
-            const waitTime = this.calculateWaitTime(healthFactor);
-            const nextCheckTime = new Date(Date.now() + waitTime);
-            const formattedDate = this.formatDate(nextCheckTime);
-
-            // 更新数据库中的健康因子、总债务和下次检查时间
-            await this.databaseService.updateLoanHealthFactor(
-                chainName,
-                user,
-                healthFactor,
-                nextCheckTime,
-                totalDebt
-            );
-
-            this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate})`);
-
-            // 如果健康因子低于清算阈值，执行清算
-            if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
-                this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}`);
-                // 记录发现可清算的时间
-                // await this.databaseService.markLiquidationDiscovered(chainName, user);
-                // await this.executeLiquidation(chainName, user, contract);
-                return;
-            }
-
         } catch (error) {
-            this.logger.error(`[${chainName}] Error checking health factor for user ${user}: ${error.message}`);
+            this.logger.error(`[${chainName}] Error checking health factors batch: ${error.message}`);
         }
     }
 
-    private async getUserAccountData(contract: ethers.Contract, user: string): Promise<UserAccountData | null> {
+    private async getUserAccountDataBatch(contract: ethers.Contract, users: string[]): Promise<Map<string, UserAccountData>> {
         try {
-            const data = await contract.getUserAccountData(user);
-            return {
-                totalCollateralBase: data[0],
-                totalDebtBase: data[1],
-                availableBorrowsBase: data[2],
-                currentLiquidationThreshold: data[3],
-                ltv: data[4],
-                healthFactor: data[5]
-            };
+            // 创建 multicall 合约
+            const multicallAddress = '0xcA11bde05977b3631167028862bE2a173976CA11'; // 通用 multicall 地址
+            const multicallAbi = [
+                'function aggregate(tuple(address target, bytes callData)[] calls) view returns (uint256 blockNumber, bytes[] returnData)'
+            ];
+            const multicallContract = new ethers.Contract(multicallAddress, multicallAbi, contract.runner);
+
+            // 准备调用数据
+            const calls = users.map(user => ({
+                target: contract.target,
+                callData: contract.interface.encodeFunctionData('getUserAccountData', [user])
+            }));
+
+            // 执行批量调用
+            const [, returnData] = await multicallContract.aggregate(calls);
+
+            // 解析返回数据
+            const results = new Map<string, UserAccountData>();
+            for (let i = 0; i < users.length; i++) {
+                const decodedData = contract.interface.decodeFunctionResult('getUserAccountData', returnData[i]);
+                results.set(users[i], {
+                    totalCollateralBase: decodedData[0],
+                    totalDebtBase: decodedData[1],
+                    availableBorrowsBase: decodedData[2],
+                    currentLiquidationThreshold: decodedData[3],
+                    ltv: decodedData[4],
+                    healthFactor: decodedData[5]
+                });
+            }
+
+            return results;
         } catch (error) {
-            this.logger.error(`Error getting user account data: ${error.message}`);
-            return null;
+            this.logger.error(`Error getting user account data batch: ${error.message}`);
+            return new Map();
         }
     }
 
@@ -509,16 +562,6 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             // await this.databaseService.deactivateLoan(chainName, user);
         } catch (error) {
             this.logger.error(`[${chainName}] Error executing liquidation for user ${user}: ${error.message}`);
-        }
-    }
-
-    private recordLiquidationTime(chainName: string, user: string) {
-        if (!this.liquidationTimes.has(chainName)) {
-            this.liquidationTimes.set(chainName, new Map());
-        }
-        const chainLiquidationTimes = this.liquidationTimes.get(chainName);
-        if (chainLiquidationTimes) {
-            chainLiquidationTimes.set(user, Date.now());
         }
     }
 

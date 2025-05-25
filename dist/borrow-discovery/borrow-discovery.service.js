@@ -27,19 +27,54 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         this.activeLoans = new Map();
         this.liquidationTimes = new Map();
         this.tokenCache = new Map();
-        this.LIQUIDATION_THRESHOLD = 1.05;
-        this.CRITICAL_THRESHOLD = 1.1;
-        this.HEALTH_FACTOR_THRESHOLD = 1.2;
-        this.MIN_WAIT_TIME = this.configService.get('MIN_CHECK_INTERVAL', 200);
+        this.LIQUIDATION_THRESHOLD = 1.005;
+        this.CRITICAL_THRESHOLD = 1.01;
+        this.HEALTH_FACTOR_THRESHOLD = 1.02;
+        this.contractCache = new Map();
+        this.providerCache = new Map();
+        this.MIN_WAIT_TIME = this.configService.get('MIN_CHECK_INTERVAL', 1000);
         this.MAX_WAIT_TIME = this.configService.get('MAX_CHECK_INTERVAL', 30 * 60 * 1000);
     }
     async onModuleInit() {
         this.logger.log('BorrowDiscoveryService initializing...');
+        await this.initializeResources();
         await this.loadTokenCache();
         await this.loadActiveLoans();
         await this.startListening();
         this.startHealthFactorChecker();
         this.startHeartbeat();
+    }
+    async initializeResources() {
+        const chains = this.chainService.getActiveChains();
+        for (const chainName of chains) {
+            try {
+                const provider = await this.chainService.getProvider(chainName);
+                this.providerCache.set(chainName, provider);
+                const config = this.chainService.getChainConfig(chainName);
+                const abiPath = path.join(process.cwd(), 'abi', `${chainName.toUpperCase()}_AAVE_V3_POOL_ABI.json`);
+                const abi = JSON.parse(fs.readFileSync(abiPath, 'utf8'));
+                const contract = new ethers_1.ethers.Contract(config.contracts.lendingPool, abi, provider);
+                this.contractCache.set(chainName, contract);
+                this.logger.log(`[${chainName}] Initialized provider and contract`);
+            }
+            catch (error) {
+                this.logger.error(`[${chainName}] Failed to initialize resources: ${error.message}`);
+            }
+        }
+    }
+    getContract(chainName) {
+        const contract = this.contractCache.get(chainName);
+        if (!contract) {
+            throw new Error(`Contract not initialized for chain ${chainName}`);
+        }
+        return contract;
+    }
+    getProvider(chainName) {
+        const provider = this.providerCache.get(chainName);
+        if (!provider) {
+            throw new Error(`Provider not initialized for chain ${chainName}`);
+        }
+        return provider;
     }
     async loadTokenCache() {
         try {
@@ -111,15 +146,19 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                 const activeLoans = await this.databaseService.getActiveLoans(chainName);
                 this.logger.log(`[${chainName}] Found ${activeLoans.length} active loans in database`);
                 if (activeLoans.length > 0) {
-                    this.logger.log(`[${chainName}] Checking health factors for ${activeLoans.length} active loans...`);
-                    const provider = await this.chainService.getProvider(chainName);
-                    const config = this.chainService.getChainConfig(chainName);
-                    const abiPath = path.join(process.cwd(), 'abi', `${chainName.toUpperCase()}_AAVE_V3_POOL_ABI.json`);
-                    const abi = JSON.parse(fs.readFileSync(abiPath, 'utf8'));
-                    const contract = new ethers_1.ethers.Contract(config.contracts.lendingPool, abi, provider);
-                    for (const loan of activeLoans) {
-                        this.checkHealthFactor(chainName, loan.user, contract);
+                    this.logger.log(`[${chainName}] Loading active loans into memory...`);
+                    if (!this.activeLoans.has(chainName)) {
+                        this.activeLoans.set(chainName, new Map());
                     }
+                    const activeLoansMap = this.activeLoans.get(chainName);
+                    const now = new Date();
+                    for (const loan of activeLoans) {
+                        activeLoansMap.set(loan.user, {
+                            nextCheckTime: now,
+                            healthFactor: loan.healthFactor
+                        });
+                    }
+                    this.logger.log(`[${chainName}] Loaded ${activeLoansMap.size} active loans into memory, will check immediately`);
                 }
             }
         }
@@ -176,11 +215,14 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                             this.logger.log(`- Referral Code: ${referralCode}`);
                             this.logger.log(`- Transaction Hash: ${(event === null || event === void 0 ? void 0 : event.transactionHash) || ((_a = event === null || event === void 0 ? void 0 : event.log) === null || _a === void 0 ? void 0 : _a.transactionHash)}`);
                             if (!this.activeLoans.has(chainName)) {
-                                this.activeLoans.set(chainName, new Set());
+                                this.activeLoans.set(chainName, new Map());
                             }
-                            const activeLoansSet = this.activeLoans.get(chainName);
-                            if (activeLoansSet) {
-                                activeLoansSet.add(onBehalfOf);
+                            const activeLoansMap = this.activeLoans.get(chainName);
+                            if (activeLoansMap) {
+                                activeLoansMap.set(onBehalfOf, {
+                                    nextCheckTime: new Date(),
+                                    healthFactor: 0
+                                });
                             }
                             await this.databaseService.createOrUpdateLoan(chainName, onBehalfOf, 0);
                             this.logger.log(`[${chainName}] Created/Updated loan record for user ${onBehalfOf}`);
@@ -194,27 +236,6 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                 catch (error) {
                     this.logger.error(`[${chainName}] Failed to set up Borrow event listener: ${error.message}`);
                 }
-                contract.on('Repay', async (reserve, user, repayer, amount, useATokens, event) => {
-                    var _a;
-                    try {
-                        const tokenInfo = await this.getTokenInfo(chainName, reserve, provider);
-                        this.logger.log(`[${chainName}] Repay event detected:`);
-                        this.logger.log(`- Reserve: ${reserve} (${tokenInfo.symbol})`);
-                        this.logger.log(`- User: ${user}`);
-                        this.logger.log(`- Repayer: ${repayer}`);
-                        this.logger.log(`- Amount: ${this.formatAmount(amount, tokenInfo.decimals)} ${tokenInfo.symbol}`);
-                        this.logger.log(`- Use ATokens: ${useATokens}`);
-                        this.logger.log(`- Transaction Hash: ${(event === null || event === void 0 ? void 0 : event.transactionHash) || ((_a = event === null || event === void 0 ? void 0 : event.log) === null || _a === void 0 ? void 0 : _a.transactionHash)}`);
-                        const activeLoans = await this.databaseService.getActiveLoans(chainName);
-                        const loanExists = activeLoans.some(loan => loan.user.toLowerCase() === user.toLowerCase());
-                        if (!loanExists) {
-                            this.logger.warn(`[${chainName}] Received Repay event for non-existent loan: user=${user}, amount=${this.formatAmount(amount, tokenInfo.decimals)} ${tokenInfo.symbol}`);
-                        }
-                    }
-                    catch (error) {
-                        this.logger.error(`[${chainName}] Error processing Repay event: ${error.message}`);
-                    }
-                });
                 contract.on('LiquidationCall', async (collateralAsset, debtAsset, user, debtToCover, liquidatedCollateralAmount, liquidator, receiveAToken, event) => {
                     var _a, _b;
                     try {
@@ -231,20 +252,11 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                         this.logger.log(`- Liquidator: ${liquidator}`);
                         this.logger.log(`- Receive AToken: ${receiveAToken}`);
                         this.logger.log(`- Transaction Hash: ${(event === null || event === void 0 ? void 0 : event.transactionHash) || ((_a = event === null || event === void 0 ? void 0 : event.log) === null || _a === void 0 ? void 0 : _a.transactionHash)}`);
-                        const accountData = await this.getUserAccountData(contract, user);
-                        if (!accountData) {
-                            this.logger.warn(`[${chainName}] Could not get account data for user ${user}`);
-                            return;
-                        }
-                        const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
-                        const totalDebt = Number(ethers_1.ethers.formatUnits(accountData.totalDebtBase, 8));
                         await this.databaseService.recordLiquidation(chainName, user, liquidator, (event === null || event === void 0 ? void 0 : event.transactionHash) || ((_b = event === null || event === void 0 ? void 0 : event.log) === null || _b === void 0 ? void 0 : _b.transactionHash));
                         this.logger.log(`[${chainName}] Recorded liquidation for user ${user}`);
-                        this.logger.log(`[${chainName}] Final health factor: ${healthFactor}`);
-                        this.logger.log(`[${chainName}] Final total debt: ${totalDebt.toFixed(2)} USD`);
-                        const activeLoansSet = this.activeLoans.get(chainName);
-                        if (activeLoansSet) {
-                            activeLoansSet.delete(user);
+                        const activeLoansMap = this.activeLoans.get(chainName);
+                        if (activeLoansMap) {
+                            activeLoansMap.delete(user);
                         }
                     }
                     catch (error) {
@@ -259,22 +271,26 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         }
     }
     startHealthFactorChecker() {
-        this.checkInterval = setInterval(async () => {
+        let isChecking = false;
+        const checkAllLoans = async () => {
+            if (isChecking) {
+                return;
+            }
+            isChecking = true;
             try {
-                const loansToCheck = await this.databaseService.getLoansToCheck();
-                for (const loan of loansToCheck) {
-                    const provider = await this.chainService.getProvider(loan.chainName);
-                    const config = this.chainService.getChainConfig(loan.chainName);
-                    const abiPath = path.join(process.cwd(), 'abi', `${loan.chainName.toUpperCase()}_AAVE_V3_POOL_ABI.json`);
-                    const abi = JSON.parse(fs.readFileSync(abiPath, 'utf8'));
-                    const contract = new ethers_1.ethers.Contract(config.contracts.lendingPool, abi, provider);
-                    await this.checkHealthFactor(loan.chainName, loan.user, contract);
+                for (const chainName of this.activeLoans.keys()) {
+                    await this.checkHealthFactorsBatch(chainName);
                 }
             }
             catch (error) {
                 this.logger.error(`Error in health factor checker: ${error.message}`);
             }
-        }, 60000);
+            finally {
+                isChecking = false;
+            }
+        };
+        checkAllLoans();
+        this.checkInterval = setInterval(checkAllLoans, this.MIN_WAIT_TIME);
     }
     startHeartbeat() {
         this.printHeartbeat();
@@ -306,50 +322,78 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             });
         }
     }
-    async checkHealthFactor(chainName, user, contract) {
+    async checkHealthFactorsBatch(chainName) {
         try {
-            const accountData = await this.getUserAccountData(contract, user);
-            if (!accountData)
+            const activeLoansMap = this.activeLoans.get(chainName);
+            if (!activeLoansMap || activeLoansMap.size === 0)
                 return;
-            const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
-            const totalDebt = Number(ethers_1.ethers.formatUnits(accountData.totalDebtBase, 8));
-            this.logger.log(`[${chainName}] User ${user} health factor: ${healthFactor}`);
-            this.logger.log(`[${chainName}] User ${user} total debt: ${totalDebt.toFixed(2)} USD`);
-            if (totalDebt === 0) {
-                await this.databaseService.deactivateLoan(chainName, user);
-                this.logger.log(`[${chainName}] Deactivated loan for user ${user} as total debt is 0`);
+            const now = new Date();
+            const usersToCheck = Array.from(activeLoansMap.entries())
+                .filter(([_, info]) => info.nextCheckTime <= now)
+                .map(([user]) => user);
+            if (usersToCheck.length === 0)
                 return;
-            }
-            const waitTime = this.calculateWaitTime(healthFactor);
-            const nextCheckTime = new Date(Date.now() + waitTime);
-            const formattedDate = this.formatDate(nextCheckTime);
-            await this.databaseService.updateLoanHealthFactor(chainName, user, healthFactor, nextCheckTime, totalDebt);
-            this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate})`);
-            if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
-                await this.databaseService.markLiquidationDiscovered(chainName, user);
-                await this.executeLiquidation(chainName, user, contract);
-                return;
+            this.logger.log(`[${chainName}] Checking health factors for ${usersToCheck.length}/${activeLoansMap.size} active checkable loans...`);
+            const contract = this.getContract(chainName);
+            const accountDataMap = await this.getUserAccountDataBatch(contract, usersToCheck);
+            for (const user of usersToCheck) {
+                const accountData = accountDataMap.get(user);
+                if (!accountData)
+                    continue;
+                const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
+                const totalDebt = Number(ethers_1.ethers.formatUnits(accountData.totalDebtBase, 8));
+                if (totalDebt === 0) {
+                    activeLoansMap.delete(user);
+                    await this.databaseService.deactivateLoan(chainName, user);
+                    this.logger.log(`[${chainName}] Removed user ${user} from active loans and database as total debt is 0`);
+                    continue;
+                }
+                if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
+                    this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}`);
+                }
+                const waitTime = this.calculateWaitTime(healthFactor);
+                const nextCheckTime = new Date(Date.now() + waitTime);
+                const formattedDate = this.formatDate(nextCheckTime);
+                this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate})`);
+                activeLoansMap.set(user, {
+                    healthFactor,
+                    nextCheckTime
+                });
             }
         }
         catch (error) {
-            this.logger.error(`[${chainName}] Error checking health factor for user ${user}: ${error.message}`);
+            this.logger.error(`[${chainName}] Error checking health factors batch: ${error.message}`);
         }
     }
-    async getUserAccountData(contract, user) {
+    async getUserAccountDataBatch(contract, users) {
         try {
-            const data = await contract.getUserAccountData(user);
-            return {
-                totalCollateralBase: data[0],
-                totalDebtBase: data[1],
-                availableBorrowsBase: data[2],
-                currentLiquidationThreshold: data[3],
-                ltv: data[4],
-                healthFactor: data[5]
-            };
+            const multicallAddress = '0xcA11bde05977b3631167028862bE2a173976CA11';
+            const multicallAbi = [
+                'function aggregate(tuple(address target, bytes callData)[] calls) view returns (uint256 blockNumber, bytes[] returnData)'
+            ];
+            const multicallContract = new ethers_1.ethers.Contract(multicallAddress, multicallAbi, contract.runner);
+            const calls = users.map(user => ({
+                target: contract.target,
+                callData: contract.interface.encodeFunctionData('getUserAccountData', [user])
+            }));
+            const [, returnData] = await multicallContract.aggregate(calls);
+            const results = new Map();
+            for (let i = 0; i < users.length; i++) {
+                const decodedData = contract.interface.decodeFunctionResult('getUserAccountData', returnData[i]);
+                results.set(users[i], {
+                    totalCollateralBase: decodedData[0],
+                    totalDebtBase: decodedData[1],
+                    availableBorrowsBase: decodedData[2],
+                    currentLiquidationThreshold: decodedData[3],
+                    ltv: decodedData[4],
+                    healthFactor: decodedData[5]
+                });
+            }
+            return results;
         }
         catch (error) {
-            this.logger.error(`Error getting user account data: ${error.message}`);
-            return null;
+            this.logger.error(`Error getting user account data batch: ${error.message}`);
+            return new Map();
         }
     }
     calculateHealthFactor(healthFactor) {
@@ -381,15 +425,6 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         }
         catch (error) {
             this.logger.error(`[${chainName}] Error executing liquidation for user ${user}: ${error.message}`);
-        }
-    }
-    recordLiquidationTime(chainName, user) {
-        if (!this.liquidationTimes.has(chainName)) {
-            this.liquidationTimes.set(chainName, new Map());
-        }
-        const chainLiquidationTimes = this.liquidationTimes.get(chainName);
-        if (chainLiquidationTimes) {
-            chainLiquidationTimes.set(user, Date.now());
         }
     }
     async onModuleDestroy() {
