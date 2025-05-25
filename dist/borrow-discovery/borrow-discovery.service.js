@@ -224,7 +224,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                                     healthFactor: 0
                                 });
                             }
-                            await this.databaseService.createOrUpdateLoan(chainName, onBehalfOf, 0);
+                            await this.databaseService.createOrUpdateLoan(chainName, onBehalfOf);
                             this.logger.log(`[${chainName}] Created/Updated loan record for user ${onBehalfOf}`);
                         }
                         catch (error) {

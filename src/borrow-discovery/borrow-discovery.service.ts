@@ -290,11 +290,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                             }
 
                             // 创建贷款记录
-                            await this.databaseService.createOrUpdateLoan(
-                                chainName,
-                                onBehalfOf,
-                                0 // 初始值，由健康因子检查器更新
-                            );
+                            await this.databaseService.createOrUpdateLoan(chainName, onBehalfOf);
 
                             this.logger.log(`[${chainName}] Created/Updated loan record for user ${onBehalfOf}`);
                         } catch (error) {

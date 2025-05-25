@@ -29,28 +29,6 @@ export class DatabaseService implements OnModuleInit {
         return DatabaseService.prisma;
     }
 
-    async updateLoanHealthFactor(
-        chainName: string,
-        user: string,
-        healthFactor: number,
-        nextCheckTime: Date,
-        totalDebt: number
-    ): Promise<void> {
-        await this.prisma.loan.updateMany({
-            where: {
-                chainName,
-                user: user.toLowerCase(),
-                isActive: true
-            },
-            data: {
-                healthFactor,
-                lastCheckTime: new Date(),
-                nextCheckTime,
-                totalDebt
-            }
-        });
-    }
-
     async markLiquidationDiscovered(chainName: string, user: string) {
         try {
             // 检查是否存在贷款记录
@@ -136,10 +114,7 @@ export class DatabaseService implements OnModuleInit {
                 where: {
                     isActive: true,
                     ...(chainName ? { chainName } : {}),
-                },
-                orderBy: {
-                    nextCheckTime: 'asc',
-                },
+                }
             });
         } catch (error) {
             this.logger.error(`Error getting active loans: ${error.message}`);
@@ -170,11 +145,8 @@ export class DatabaseService implements OnModuleInit {
         try {
             return await this.prisma.loan.findMany({
                 where: {
-                    isActive: true,
-                    nextCheckTime: {
-                        lte: new Date(),
-                    },
-                },
+                    isActive: true
+                }
             });
         } catch (error) {
             this.logger.error(`Error getting loans to check: ${error.message}`);
@@ -237,11 +209,7 @@ export class DatabaseService implements OnModuleInit {
         }
     }
 
-    async createOrUpdateLoan(
-        chainName: string,
-        user: string,
-        totalDebt: number
-    ): Promise<void> {
+    async createOrUpdateLoan(chainName: string, user: string) {
         try {
             await this.prisma.loan.upsert({
                 where: {
@@ -251,17 +219,14 @@ export class DatabaseService implements OnModuleInit {
                     },
                 },
                 update: {
-                    totalDebt,
                     isActive: true,
                     updatedAt: new Date(),
                 },
                 create: {
                     chainName,
                     user: user.toLowerCase(),
-                    totalDebt: 0, // 初始值，由健康因子检查线程更新
                     isActive: true,
-                    healthFactor: 0, // 初始值，由健康因子检查线程更新
-                    nextCheckTime: new Date(), // 初始值，由健康因子检查线程更新
+                    healthFactor: 0
                 },
             });
         } catch (error) {

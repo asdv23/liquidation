@@ -13,7 +13,6 @@ model Loan {
   user      String   // 借款人地址
   healthFactor Float // 健康因子
   lastCheckTime DateTime @default(now()) // 最后检查时间
-  nextCheckTime DateTime // 下次检查时间
   isActive  Boolean  @default(true) // 是否活跃
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -22,21 +21,9 @@ model Loan {
   liquidationTime DateTime? // 清算时间
   liquidator String? // 清算人地址
   liquidationDelay Int? // 从发现到清算的延迟（毫秒）
-  totalDebt Decimal @default(0)
-  healthHistory LoanHealthHistory[] // 添加反向关系
 
   @@unique([chainName, user])
   @@index([chainName, isActive])
-  @@index([healthFactor])
-  @@index([nextCheckTime])
-}
-
-model LoanHealthHistory {
-  id           Int      @id @default(autoincrement())
-  loan         Loan     @relation(fields: [loanId], references: [id])
-  loanId       Int
-  checkTime    DateTime
-  healthFactor Decimal
 }
 
 model Token {

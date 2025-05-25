@@ -36,21 +36,6 @@ let DatabaseService = DatabaseService_1 = class DatabaseService {
     get prisma() {
         return DatabaseService_1.prisma;
     }
-    async updateLoanHealthFactor(chainName, user, healthFactor, nextCheckTime, totalDebt) {
-        await this.prisma.loan.updateMany({
-            where: {
-                chainName,
-                user: user.toLowerCase(),
-                isActive: true
-            },
-            data: {
-                healthFactor,
-                lastCheckTime: new Date(),
-                nextCheckTime,
-                totalDebt
-            }
-        });
-    }
     async markLiquidationDiscovered(chainName, user) {
         try {
             const existingLoan = await this.prisma.loan.findFirst({
@@ -121,10 +106,7 @@ let DatabaseService = DatabaseService_1 = class DatabaseService {
     async getActiveLoans(chainName) {
         try {
             return await this.prisma.loan.findMany({
-                where: Object.assign({ isActive: true }, (chainName ? { chainName } : {})),
-                orderBy: {
-                    nextCheckTime: 'asc',
-                },
+                where: Object.assign({ isActive: true }, (chainName ? { chainName } : {}))
             });
         }
         catch (error) {
@@ -155,11 +137,8 @@ let DatabaseService = DatabaseService_1 = class DatabaseService {
         try {
             return await this.prisma.loan.findMany({
                 where: {
-                    isActive: true,
-                    nextCheckTime: {
-                        lte: new Date(),
-                    },
-                },
+                    isActive: true
+                }
             });
         }
         catch (error) {
@@ -221,7 +200,7 @@ let DatabaseService = DatabaseService_1 = class DatabaseService {
             throw error;
         }
     }
-    async createOrUpdateLoan(chainName, user, totalDebt) {
+    async createOrUpdateLoan(chainName, user) {
         try {
             await this.prisma.loan.upsert({
                 where: {
@@ -231,17 +210,14 @@ let DatabaseService = DatabaseService_1 = class DatabaseService {
                     },
                 },
                 update: {
-                    totalDebt,
                     isActive: true,
                     updatedAt: new Date(),
                 },
                 create: {
                     chainName,
                     user: user.toLowerCase(),
-                    totalDebt: 0,
                     isActive: true,
-                    healthFactor: 0,
-                    nextCheckTime: new Date(),
+                    healthFactor: 0
                 },
             });
         }

@@ -6,14 +6,12 @@ export declare class DatabaseService implements OnModuleInit {
     constructor();
     onModuleInit(): Promise<void>;
     get prisma(): PrismaClient<import(".prisma/client").Prisma.PrismaClientOptions, never, import("@prisma/client/runtime/library").DefaultArgs>;
-    updateLoanHealthFactor(chainName: string, user: string, healthFactor: number, nextCheckTime: Date, totalDebt: number): Promise<void>;
     markLiquidationDiscovered(chainName: string, user: string): Promise<{
         id: number;
         chainName: string;
         user: string;
         healthFactor: number;
         lastCheckTime: Date;
-        nextCheckTime: Date;
         isActive: boolean;
         createdAt: Date;
         updatedAt: Date;
@@ -22,7 +20,6 @@ export declare class DatabaseService implements OnModuleInit {
         liquidationTime: Date | null;
         liquidator: string | null;
         liquidationDelay: number | null;
-        totalDebt: import("@prisma/client/runtime/library").Decimal;
     }>;
     recordLiquidation(chainName: string, user: string, liquidator: string, txHash: string): Promise<{
         id: number;
@@ -30,7 +27,6 @@ export declare class DatabaseService implements OnModuleInit {
         user: string;
         healthFactor: number;
         lastCheckTime: Date;
-        nextCheckTime: Date;
         isActive: boolean;
         createdAt: Date;
         updatedAt: Date;
@@ -39,7 +35,6 @@ export declare class DatabaseService implements OnModuleInit {
         liquidationTime: Date | null;
         liquidator: string | null;
         liquidationDelay: number | null;
-        totalDebt: import("@prisma/client/runtime/library").Decimal;
     }>;
     getActiveLoans(chainName?: string): Promise<{
         id: number;
@@ -47,7 +42,6 @@ export declare class DatabaseService implements OnModuleInit {
         user: string;
         healthFactor: number;
         lastCheckTime: Date;
-        nextCheckTime: Date;
         isActive: boolean;
         createdAt: Date;
         updatedAt: Date;
@@ -56,7 +50,6 @@ export declare class DatabaseService implements OnModuleInit {
         liquidationTime: Date | null;
         liquidator: string | null;
         liquidationDelay: number | null;
-        totalDebt: import("@prisma/client/runtime/library").Decimal;
     }[]>;
     deactivateLoan(chainName: string, user: string): Promise<{
         id: number;
@@ -64,7 +57,6 @@ export declare class DatabaseService implements OnModuleInit {
         user: string;
         healthFactor: number;
         lastCheckTime: Date;
-        nextCheckTime: Date;
         isActive: boolean;
         createdAt: Date;
         updatedAt: Date;
@@ -73,7 +65,6 @@ export declare class DatabaseService implements OnModuleInit {
         liquidationTime: Date | null;
         liquidator: string | null;
         liquidationDelay: number | null;
-        totalDebt: import("@prisma/client/runtime/library").Decimal;
     }>;
     getLoansToCheck(): Promise<{
         id: number;
@@ -81,7 +72,6 @@ export declare class DatabaseService implements OnModuleInit {
         user: string;
         healthFactor: number;
         lastCheckTime: Date;
-        nextCheckTime: Date;
         isActive: boolean;
         createdAt: Date;
         updatedAt: Date;
@@ -90,7 +80,6 @@ export declare class DatabaseService implements OnModuleInit {
         liquidationTime: Date | null;
         liquidator: string | null;
         liquidationDelay: number | null;
-        totalDebt: import("@prisma/client/runtime/library").Decimal;
     }[]>;
     getToken(chainName: string, address: string): Promise<{
         symbol: string;
@@ -119,5 +108,5 @@ export declare class DatabaseService implements OnModuleInit {
         address: string;
         decimals: number;
     }[]>;
-    createOrUpdateLoan(chainName: string, user: string, totalDebt: number): Promise<void>;
+    createOrUpdateLoan(chainName: string, user: string): Promise<void>;
 }
