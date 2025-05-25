@@ -283,20 +283,21 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                         this.logger.log(`- Receive AToken: ${receiveAToken}`);
                         this.logger.log(`- Transaction Hash: ${event?.transactionHash || event?.log?.transactionHash}`);
 
-                        // 记录清算信息
-                        await this.databaseService.recordLiquidation(
-                            chainName,
-                            user,
-                            liquidator,
-                            event?.transactionHash || event?.log?.transactionHash
-                        );
-
-                        this.logger.log(`[${chainName}] Recorded liquidation for user ${user}`);
-
                         // 从内存中移除该贷款
                         const activeLoansMap = this.activeLoans.get(chainName);
                         if (activeLoansMap) {
                             activeLoansMap.delete(user);
+
+                            // 如果数据库中有借款信息，则记录清算信息
+                            await this.databaseService.recordLiquidation(
+                                chainName,
+                                user,
+                                liquidator,
+                                event?.transactionHash || event?.log?.transactionHash
+                            );
+                            this.logger.log(`[${chainName}] Recorded liquidation for user ${user}`);
+                        } else {
+                            this.logger.log(`[${chainName}] No loan found for user ${user}, skipping liquidation record`);
                         }
                     } catch (error) {
                         this.logger.error(`[${chainName}] Error processing LiquidationCall event: ${error.message}`);

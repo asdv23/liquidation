@@ -168,13 +168,13 @@ npm run start:dev:watch
 npm run build
 
 # 使用 PM2 启动服务
-pm2 start dist/main.js --name "liquidation-bot"
+pm2 start dist/main.js --name "bot"
 
 # 查看服务状态
 pm2 status
 
 # 查看日志
-pm2 logs liquidation-bot
+pm2 logs bot
 ```
 
 ### 5. 服务管理
@@ -182,13 +182,13 @@ pm2 logs liquidation-bot
 #### 使用 PM2
 ```bash
 # 重启服务
-pm2 restart liquidation-bot
+pm2 restart bot
 
 # 停止服务
-pm2 stop liquidation-bot
+pm2 stop bot
 
 # 删除服务
-pm2 delete liquidation-bot
+pm2 delete bot
 
 # 查看资源使用
 pm2 monit
@@ -208,14 +208,7 @@ kill <进程ID>
 
 ### 6. 日志管理
 ```bash
-# 查看实时日志
-tail -f liquidation.log
-
-# 查看错误日志
-grep "ERROR" liquidation.log
-
-# 查看警告日志
-grep "WARN" liquidation.log
+tail -n 1000 ~/.pm2/logs/bot-out.log
 ```
 
 ### 7. 更新服务
@@ -234,7 +227,7 @@ npx prisma generate
 npx prisma db push
 
 # 5. 重启服务
-pm2 restart liquidation-bot
+pm2 restart bot
 ```
 
 ## 后续计划

@@ -226,11 +226,14 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                         this.logger.log(`- Liquidator: ${liquidator}`);
                         this.logger.log(`- Receive AToken: ${receiveAToken}`);
                         this.logger.log(`- Transaction Hash: ${(event === null || event === void 0 ? void 0 : event.transactionHash) || ((_a = event === null || event === void 0 ? void 0 : event.log) === null || _a === void 0 ? void 0 : _a.transactionHash)}`);
-                        await this.databaseService.recordLiquidation(chainName, user, liquidator, (event === null || event === void 0 ? void 0 : event.transactionHash) || ((_b = event === null || event === void 0 ? void 0 : event.log) === null || _b === void 0 ? void 0 : _b.transactionHash));
-                        this.logger.log(`[${chainName}] Recorded liquidation for user ${user}`);
                         const activeLoansMap = this.activeLoans.get(chainName);
                         if (activeLoansMap) {
                             activeLoansMap.delete(user);
+                            await this.databaseService.recordLiquidation(chainName, user, liquidator, (event === null || event === void 0 ? void 0 : event.transactionHash) || ((_b = event === null || event === void 0 ? void 0 : event.log) === null || _b === void 0 ? void 0 : _b.transactionHash));
+                            this.logger.log(`[${chainName}] Recorded liquidation for user ${user}`);
+                        }
+                        else {
+                            this.logger.log(`[${chainName}] No loan found for user ${user}, skipping liquidation record`);
                         }
                     }
                     catch (error) {
