@@ -1,4 +1,32 @@
-# 多链清算机器人
+# Liquidation Bot
+
+多链清算机器人，支持 Aave V3 协议的闪电贷清算。
+
+## 项目结构
+
+```
+liquidation/
+├── backend/            # Node.js 后端服务
+│   ├── src/           # 源代码
+│   ├── test/          # 测试
+│   ├── config/        # 配置文件
+│   ├── prisma/        # 数据库配置
+│   ├── abi/           # 合约 ABI
+│   ├── dist/          # 编译输出
+│   └── node_modules/  # 依赖包
+│
+├── contracts/         # Solidity 智能合约
+│   ├── src/          # 合约源代码
+│   ├── test/         # 合约测试
+│   ├── script/       # 部署脚本
+│   └── lib/          # 依赖库
+│
+├── .github/          # GitHub 配置
+├── .vscode/          # VS Code 配置
+├── .gitignore        # Git 忽略文件
+├── .gitmodules       # Git 子模块配置
+└── README.md         # 项目说明文档
+```
 
 ## 项目架构
 

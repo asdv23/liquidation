@@ -1,0 +1,28 @@
+{
+    "solidity.compileUsingRemoteVersion": "v0.7.6+commit.7338295f",
+    "files.autoSave": "afterDelay",
+    "git.autofetch": true,
+    "git.confirmSync": false,
+    "editor.accessibilitySupport": "off",
+    "git.enableSmartCommit": true,
+    "editor.formatOnSave": true,
+    "[solidity]": {
+        "editor.defaultFormatter": "JuanBlanco.solidity"
+    },
+    "gitlens.views.repositories.files.layout": "list",
+    "[typescript]": {
+        "editor.defaultFormatter": "vscode.typescript-language-features"
+    },
+    "solidity.formatter": "forge",
+    "[json]": {
+        "editor.defaultFormatter": "vscode.json-language-features"
+    },
+    "git.openRepositoryInParentFolders": "always",
+    "[jsonc]": {
+        "editor.defaultFormatter": "vscode.json-language-features"
+    },
+    "javascript.updateImportsOnFileMove.enabled": "always",
+    "[markdown]": {
+        "diffEditor.ignoreTrimWhitespace": true
+    },
+}

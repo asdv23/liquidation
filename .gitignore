@@ -1,5 +1,7 @@
 /properties/kovan.properties
 /bck
-/node_modules
+*/node_modules
 .env
 liquidation.log
+dev.db
+fork.db
