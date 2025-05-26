@@ -31,6 +31,10 @@ export declare class BorrowDiscoveryService implements OnModuleInit, OnModuleDes
     private getTokenInfo;
     private formatAmount;
     private loadActiveLoans;
+    private createBorrowEventHandler;
+    private createLiquidationCallEventHandler;
+    private setupEventListeners;
+    private reinitializeEventListeners;
     private startListening;
     private startHealthFactorChecker;
     private formatDate;

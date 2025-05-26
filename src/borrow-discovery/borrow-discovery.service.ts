@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '../database/database.service';
 import * as fs from 'fs';
 import * as path from 'path';
+import { WebSocket } from 'ws';
 
 interface UserAccountData {
     totalCollateralBase: bigint;
@@ -31,9 +32,9 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
     private activeLoans: Map<string, Map<string, LoanInfo>> = new Map();
     private tokenCache: Map<string, Map<string, TokenInfo>> = new Map();
     private lastLiquidationAttempt: Map<string, Map<string, number>> = new Map(); // 新增：记录上次清算尝试的健康因子
-    private readonly LIQUIDATION_THRESHOLD = 1.005; // 清算阈值
-    private readonly CRITICAL_THRESHOLD = 1.01; // 危险阈值
-    private readonly HEALTH_FACTOR_THRESHOLD = 1.02; // 健康阈值
+    private readonly LIQUIDATION_THRESHOLD = 1.0001; // 清算阈值
+    private readonly CRITICAL_THRESHOLD = 1.001; // 危险阈值
+    private readonly HEALTH_FACTOR_THRESHOLD = 1.01; // 健康阈值
     private readonly MIN_WAIT_TIME: number; // 最小等待时间（毫秒）
     private readonly MAX_WAIT_TIME: number; // 最大等待时间（毫秒）
     private readonly PRIVATE_KEY: string; // EOA 私钥
@@ -259,6 +260,101 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         }
     }
 
+    private createBorrowEventHandler(chainName: string, provider: ethers.Provider) {
+        return async (reserve: string, user: string, onBehalfOf: string, amount: bigint,
+            interestRateMode: number, borrowRate: bigint, referralCode: number, event: any) => {
+            try {
+                const tokenInfo = await this.getTokenInfo(chainName, reserve, provider);
+                this.logger.log(`[${chainName}] Borrow event detected:`);
+                this.logger.log(`- Reserve: ${reserve} (${tokenInfo.symbol})`);
+                this.logger.log(`- User: ${user}`);
+                this.logger.log(`- OnBehalfOf: ${onBehalfOf}`);
+                this.logger.log(`- Amount: ${this.formatAmount(amount, tokenInfo.decimals)} ${tokenInfo.symbol}`);
+                this.logger.log(`- Interest Rate Mode: ${interestRateMode}`);
+                this.logger.log(`- Borrow Rate: ${ethers.formatUnits(borrowRate, 27)}`);
+                this.logger.log(`- Referral Code: ${referralCode}`);
+                this.logger.log(`- Transaction Hash: ${event?.transactionHash || event?.log?.transactionHash}`);
+
+                if (!this.activeLoans.has(chainName)) {
+                    this.activeLoans.set(chainName, new Map());
+                }
+                const activeLoansMap = this.activeLoans.get(chainName);
+                if (activeLoansMap) {
+                    activeLoansMap.set(onBehalfOf, {
+                        nextCheckTime: new Date(),
+                        healthFactor: 1.0
+                    });
+                }
+
+                await this.databaseService.createOrUpdateLoan(chainName, onBehalfOf);
+                this.logger.log(`[${chainName}] Created/Updated loan record for user ${onBehalfOf}`);
+            } catch (error) {
+                this.logger.error(`[${chainName}] Error processing Borrow event: ${error.message}`);
+            }
+        };
+    }
+
+    private createLiquidationCallEventHandler(chainName: string, provider: ethers.Provider) {
+        return async (collateralAsset: string, debtAsset: string, user: string,
+            debtToCover: bigint, liquidatedCollateralAmount: bigint, liquidator: string,
+            receiveAToken: boolean, event: any) => {
+            try {
+                const [collateralInfo, debtInfo] = await Promise.all([
+                    this.getTokenInfo(chainName, collateralAsset, provider),
+                    this.getTokenInfo(chainName, debtAsset, provider),
+                ]);
+                this.logger.log(`[${chainName}] LiquidationCall event detected:`);
+                this.logger.log(`- Collateral Asset: ${collateralAsset} (${collateralInfo.symbol})`);
+                this.logger.log(`- Debt Asset: ${debtAsset} (${debtInfo.symbol})`);
+                this.logger.log(`- User: ${user}`);
+                this.logger.log(`- Debt to Cover: ${this.formatAmount(debtToCover, debtInfo.decimals)} ${debtInfo.symbol}`);
+                this.logger.log(`- Liquidated Amount: ${this.formatAmount(liquidatedCollateralAmount, collateralInfo.decimals)} ${collateralInfo.symbol}`);
+                this.logger.log(`- Liquidator: ${liquidator}`);
+                this.logger.log(`- Receive AToken: ${receiveAToken}`);
+                this.logger.log(`- Transaction Hash: ${event?.transactionHash || event?.log?.transactionHash}`);
+
+                const activeLoansMap = this.activeLoans.get(chainName);
+                if (activeLoansMap && activeLoansMap.has(user)) {
+                    activeLoansMap.delete(user);
+                    await this.databaseService.recordLiquidation(
+                        chainName,
+                        user,
+                        liquidator,
+                        event?.transactionHash || event?.log?.transactionHash
+                    );
+                    this.logger.log(`[${chainName}] Recorded liquidation for user ${user}`);
+                } else {
+                    this.logger.log(`[${chainName}] No loan found for user ${user}, skipping liquidation record`);
+                }
+            } catch (error) {
+                this.logger.error(`[${chainName}] Error processing LiquidationCall event: ${error.message}`);
+            }
+        };
+    }
+
+    private async setupEventListeners(chainName: string, contract: ethers.Contract, provider: ethers.Provider) {
+        // 移除旧的事件监听器
+        contract.removeAllListeners('Borrow');
+        contract.removeAllListeners('LiquidationCall');
+
+        // 添加新的事件监听器
+        contract.on('Borrow', this.createBorrowEventHandler(chainName, provider));
+        contract.on('LiquidationCall', this.createLiquidationCallEventHandler(chainName, provider));
+    }
+
+    private async reinitializeEventListeners(chainName: string) {
+        try {
+            const provider = await this.chainService.getProvider(chainName);
+            const contract = this.getContract(chainName);
+
+            this.logger.log(`[${chainName}] Reinitializing event listeners...`);
+            await this.setupEventListeners(chainName, contract, provider);
+            this.logger.log(`[${chainName}] Event listeners reinitialized successfully`);
+        } catch (error) {
+            this.logger.error(`[${chainName}] Failed to reinitialize event listeners: ${error.message}`);
+        }
+    }
+
     private async startListening() {
         const chains = this.chainService.getActiveChains();
         this.logger.log(`Starting to listen on chains: ${chains.join(', ')}`);
@@ -282,86 +378,19 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
 
                 const contract = this.getContract(chainName);
 
-                // 监听 Borrow 事件
-                this.logger.log(`[${chainName}] Setting up Borrow event listener...`);
-                try {
-                    contract.on('Borrow', async (reserve, user, onBehalfOf, amount, interestRateMode, borrowRate, referralCode, event) => {
-                        try {
-                            const tokenInfo = await this.getTokenInfo(chainName, reserve, provider);
-                            this.logger.log(`[${chainName}] Borrow event detected:`);
-                            this.logger.log(`- Reserve: ${reserve} (${tokenInfo.symbol})`);
-                            this.logger.log(`- User: ${user}`);
-                            this.logger.log(`- OnBehalfOf: ${onBehalfOf}`);
-                            this.logger.log(`- Amount: ${this.formatAmount(amount, tokenInfo.decimals)} ${tokenInfo.symbol}`);
-                            this.logger.log(`- Interest Rate Mode: ${interestRateMode}`);
-                            this.logger.log(`- Borrow Rate: ${ethers.formatUnits(borrowRate, 27)}`);
-                            this.logger.log(`- Referral Code: ${referralCode}`);
-                            this.logger.log(`- Transaction Hash: ${event?.transactionHash || event?.log?.transactionHash}`);
-
-                            // 更新内存中的活跃贷款集合
-                            if (!this.activeLoans.has(chainName)) {
-                                this.activeLoans.set(chainName, new Map());
-                            }
-                            const activeLoansMap = this.activeLoans.get(chainName);
-                            if (activeLoansMap) {
-                                // 设置初始检查时间为现在，让健康因子检查器立即检查
-                                activeLoansMap.set(onBehalfOf, {
-                                    nextCheckTime: new Date(), // 设置为当前时间，确保立即检查
-                                    healthFactor: 1.0
-                                });
-                            }
-
-                            // 创建贷款记录
-                            await this.databaseService.createOrUpdateLoan(chainName, onBehalfOf);
-
-                            this.logger.log(`[${chainName}] Created/Updated loan record for user ${onBehalfOf}`);
-                        } catch (error) {
-                            this.logger.error(`[${chainName}] Error processing Borrow event: ${error.message}`);
-                        }
-                    });
-
-                    this.logger.log(`[${chainName}] Borrow event listener setup completed`);
-                } catch (error) {
-                    this.logger.error(`[${chainName}] Failed to set up Borrow event listener: ${error.message}`);
-                }
-
-                // 监听 LiquidationCall 事件
-                contract.on('LiquidationCall', async (collateralAsset, debtAsset, user, debtToCover, liquidatedCollateralAmount, liquidator, receiveAToken, event) => {
-                    try {
-                        const [collateralInfo, debtInfo] = await Promise.all([
-                            this.getTokenInfo(chainName, collateralAsset, provider),
-                            this.getTokenInfo(chainName, debtAsset, provider),
-                        ]);
-                        this.logger.log(`[${chainName}] LiquidationCall event detected:`);
-                        this.logger.log(`- Collateral Asset: ${collateralAsset} (${collateralInfo.symbol})`);
-                        this.logger.log(`- Debt Asset: ${debtAsset} (${debtInfo.symbol})`);
-                        this.logger.log(`- User: ${user}`);
-                        this.logger.log(`- Debt to Cover: ${this.formatAmount(debtToCover, debtInfo.decimals)} ${debtInfo.symbol}`);
-                        this.logger.log(`- Liquidated Amount: ${this.formatAmount(liquidatedCollateralAmount, collateralInfo.decimals)} ${collateralInfo.symbol}`);
-                        this.logger.log(`- Liquidator: ${liquidator}`);
-                        this.logger.log(`- Receive AToken: ${receiveAToken}`);
-                        this.logger.log(`- Transaction Hash: ${event?.transactionHash || event?.log?.transactionHash}`);
-
-                        // 从内存中移除该贷款
-                        const activeLoansMap = this.activeLoans.get(chainName);
-                        if (activeLoansMap && activeLoansMap.has(user)) {
-                            activeLoansMap.delete(user);
-
-                            // 如果数据库中有借款信息，则记录清算信息
-                            await this.databaseService.recordLiquidation(
-                                chainName,
-                                user,
-                                liquidator,
-                                event?.transactionHash || event?.log?.transactionHash
-                            );
-                            this.logger.log(`[${chainName}] Recorded liquidation for user ${user}`);
-                        } else {
-                            this.logger.log(`[${chainName}] No loan found for user ${user}, skipping liquidation record`);
-                        }
-                    } catch (error) {
-                        this.logger.error(`[${chainName}] Error processing LiquidationCall event: ${error.message}`);
-                    }
+                // 设置WebSocket重连后的回调
+                const ws = provider.websocket as WebSocket;
+                ws.on('close', async () => {
+                    this.logger.warn(`[${chainName}] WebSocket connection closed, will attempt to reinitialize event listeners after reconnection...`);
                 });
+
+                ws.on('open', async () => {
+                    this.logger.log(`[${chainName}] WebSocket connection reopened, reinitializing event listeners...`);
+                    await this.reinitializeEventListeners(chainName);
+                });
+
+                // 初始化事件监听器
+                await this.setupEventListeners(chainName, contract, provider);
 
                 this.logger.log(`[${chainName}] Successfully set up event listeners and verified contract connection`);
             } catch (error) {
