@@ -5,7 +5,6 @@ import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '../database/database.service';
 import * as fs from 'fs';
 import * as path from 'path';
-import fetch from 'node-fetch';
 
 interface UserAccountData {
     totalCollateralBase: bigint;
@@ -31,6 +30,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
     private readonly logger = new Logger(BorrowDiscoveryService.name);
     private activeLoans: Map<string, Map<string, LoanInfo>> = new Map();
     private tokenCache: Map<string, Map<string, TokenInfo>> = new Map();
+    private lastLiquidationAttempt: Map<string, Map<string, number>> = new Map(); // 新增：记录上次清算尝试的健康因子
     private readonly LIQUIDATION_THRESHOLD = 1.005; // 清算阈值
     private readonly CRITICAL_THRESHOLD = 1.01; // 危险阈值
     private readonly HEALTH_FACTOR_THRESHOLD = 1.02; // 健康阈值
@@ -38,11 +38,11 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
     private readonly MAX_WAIT_TIME: number; // 最大等待时间（毫秒）
     private readonly PRIVATE_KEY: string; // EOA 私钥
     private checkInterval: NodeJS.Timeout;
-    private heartbeatInterval: NodeJS.Timeout; // 心跳定时器
     private contractCache: Map<string, ethers.Contract> = new Map(); // 合约缓存
     private providerCache: Map<string, ethers.Provider> = new Map(); // Provider 缓存
     private signerCache: Map<string, ethers.Signer> = new Map(); // Signer 缓存
     private dataProviderCache: Map<string, ethers.Contract> = new Map(); // DataProvider 缓存
+    private priceOracleCache: Map<string, ethers.Contract> = new Map(); // PriceOracle 缓存
 
     constructor(
         private readonly chainService: ChainService,
@@ -90,15 +90,17 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 // 初始化 DataProvider
                 const addressesProviderAddress = await contract.ADDRESSES_PROVIDER();
                 const addressesProviderAbi = [
-                    'function getPoolDataProvider() view returns (address)'
+                    'function getPoolDataProvider() view returns (address)',
+                    'function getPriceOracle() view returns (address)'
                 ];
                 const addressesProvider = new ethers.Contract(
                     addressesProviderAddress,
                     addressesProviderAbi,
                     signer
                 );
-                const dataProviderAddress = await addressesProvider.getPoolDataProvider();
 
+                // dataProvider
+                const dataProviderAddress = await addressesProvider.getPoolDataProvider();
                 const dataProviderAbi = [
                     'function getUserReserveData(address asset, address user) view returns (uint256 currentATokenBalance, uint256 currentStableDebt, uint256 currentVariableDebt, uint256 principalStableDebt, uint256 scaledVariableDebt, uint256 stableBorrowRate, uint256 liquidityRate, uint40 stableRateLastUpdated, bool usageAsCollateralEnabled)'
                 ];
@@ -109,7 +111,19 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 );
                 this.dataProviderCache.set(chainName, dataProvider);
 
-                this.logger.log(`[${chainName}] Initialized provider, signer, contract and dataProvider`);
+                // priceOracle
+                const priceOracleAddress = await addressesProvider.getPriceOracle();
+                const priceOracleAbi = [
+                    'function getAssetPrice(address asset) view returns (uint256)'
+                ];
+                const priceOracle = new ethers.Contract(
+                    priceOracleAddress,
+                    priceOracleAbi,
+                    signer
+                );
+                this.priceOracleCache.set(chainName, priceOracle);
+
+                this.logger.log(`[${chainName}] Initialized provider, signer, contract, dataProvider and priceOracle`);
             } catch (error) {
                 this.logger.error(`[${chainName}] Failed to initialize resources: ${error.message}`);
             }
@@ -151,8 +165,14 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         }
     }
 
-    private async getTokenInfo(chainName: string, address: string, provider: ethers.Provider): Promise<TokenInfo> {
+    private async getTokenInfo(chainName: string, address: string, provider?: ethers.Provider): Promise<TokenInfo> {
         const normalizedAddress = address.toLowerCase();
+
+        // 如果没有传入 provider，则从缓存获取
+        const providerToUse = provider || this.providerCache.get(chainName);
+        if (!providerToUse) {
+            throw new Error(`Provider not initialized for chain ${chainName}`);
+        }
 
         // 检查缓存
         const chainTokens = this.tokenCache.get(chainName);
@@ -181,7 +201,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 'function symbol() view returns (string)',
                 'function decimals() view returns (uint8)',
             ];
-            const contract = new ethers.Contract(normalizedAddress, erc20Abi, provider);
+            const contract = new ethers.Contract(normalizedAddress, erc20Abi, providerToUse);
             const [symbol, decimals] = await Promise.all([
                 contract.symbol(),
                 contract.decimals(),
@@ -324,7 +344,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
 
                         // 从内存中移除该贷款
                         const activeLoansMap = this.activeLoans.get(chainName);
-                        if (activeLoansMap) {
+                        if (activeLoansMap && activeLoansMap.has(user)) {
                             activeLoansMap.delete(user);
 
                             // 如果数据库中有借款信息，则记录清算信息
@@ -393,6 +413,12 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             const activeLoansMap = this.activeLoans.get(chainName);
             if (!activeLoansMap || activeLoansMap.size === 0) return;
 
+            // 初始化链的清算尝试记录
+            if (!this.lastLiquidationAttempt.has(chainName)) {
+                this.lastLiquidationAttempt.set(chainName, new Map());
+            }
+            const lastLiquidationMap = this.lastLiquidationAttempt.get(chainName)!;
+
             const usersToCheck = Array.from(activeLoansMap.entries())
                 .filter(([_, info]) => info.nextCheckTime <= new Date())
                 .map(([user]) => user);
@@ -415,24 +441,34 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                     const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
                     const totalDebt = Number(ethers.formatUnits(accountData.totalDebtBase, 8));
 
-                    // 如果总债务等于 0，则从内存和数据库中移除该用户
-                    if (totalDebt === 0) {
+                    // 如果总债务小于 1 USD，则从内存和数据库中移除该用户
+                    if (totalDebt < 1) {
                         activeLoansMap.delete(user);
+                        lastLiquidationMap.delete(user); // 清理清算记录
                         await this.databaseService.deactivateLoan(chainName, user);
-                        this.logger.log(`[${chainName}] Removed user ${user} from active loans and database as total debt is 0`);
+                        this.logger.log(`[${chainName}] Removed user ${user} from active loans and database as total debt is less than 1 USD`);
                         continue;
                     }
 
                     // 如果健康因子低于清算阈值，尝试清算
                     if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
-                        this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}, attempting liquidation`);
-                        await this.executeLiquidation(chainName, user, contract);
+                        const lastAttemptHealthFactor = lastLiquidationMap.get(user);
+
+                        // 如果是首次尝试清算，或者新的健康因子比上次更低，则执行清算
+                        if (lastAttemptHealthFactor === undefined || healthFactor < lastAttemptHealthFactor) {
+                            this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}, attempting liquidation`);
+                            // 记录此次清算尝试的健康因子
+                            lastLiquidationMap.set(user, healthFactor);
+                            await this.executeLiquidation(chainName, user, healthFactor, contract);
+                        } else {
+                            this.logger.log(`[${chainName}] Skipping liquidation for user ${user} as current health factor ${healthFactor} is not lower than last attempt ${lastAttemptHealthFactor}`);
+                        }
                         continue;
                     }
 
-                    // 如果健康因子低于健康阈值，记录日志
-                    if (healthFactor <= this.HEALTH_FACTOR_THRESHOLD) {
-                        this.logger.log(`[${chainName}] Health factor ${healthFactor} <= ${this.HEALTH_FACTOR_THRESHOLD} reached for user ${user}`);
+                    // 如果健康因子高于清算阈值，清除清算记录
+                    if (lastLiquidationMap.has(user)) {
+                        lastLiquidationMap.delete(user);
                     }
 
                     // 更新下次检查时间
@@ -533,7 +569,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         );
     }
 
-    private async executeLiquidation(chainName: string, user: string, contract: ethers.Contract) {
+    private async executeLiquidation(chainName: string, user: string, healthFactor: number, contract: ethers.Contract) {
         try {
             // 1. 获取用户的配置信息
             const userConfig = await contract.getUserConfiguration(user);
@@ -606,10 +642,10 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             }
 
             // 4. 对最大债务资产执行清算
-            const shouldClose = await this.checkAndCloseLowValueLoan(chainName, user, maxDebtAsset, maxDebtAmount);
-            if (shouldClose) {
-                return;
-            }
+            const tokenPrice = await this.getTokenPrice(chainName, maxDebtAsset.asset);
+            const tokenInfo = await this.getTokenInfo(chainName, maxDebtAsset.asset);
+            const debtValueInUsd = Number(maxDebtAmount) * tokenPrice / (10 ** tokenInfo.decimals);
+            this.logger.log(`[${chainName}] Executing liquidation for user ${user}, healthFactor: ${healthFactor}, maxDebtAsset: ${maxDebtAsset.asset} (${tokenInfo.symbol}), debtAmount: ${ethers.formatUnits(maxDebtAmount, tokenInfo.decimals)} ${tokenInfo.symbol}, debtValueInUsd: ${debtValueInUsd.toFixed(2)} USD`);
 
             // try {
             //     const hasVariableDebt = maxDebtAsset.currentVariableDebt > BigInt(0);
@@ -651,77 +687,16 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         }
     }
 
-    private async checkAndCloseLowValueLoan(chainName: string, user: string, maxDebtAsset: any, maxDebtAmount: bigint) {
-        try {
-            // maxDebtAsset.asset是 token地址，需要转换为symbol
-            const tokenAddress = maxDebtAsset.asset;
-            const provider = await this.chainService.getProvider(chainName);
-            const tokenInfo = await this.getTokenInfo(chainName, tokenAddress, provider);
-            const price = await this.getTokenPrice(tokenInfo.symbol);
-            // 计算债务价值, 要计算 decimals
-            const debtValueInUsd = Number(maxDebtAmount) * price / 10 ** tokenInfo.decimals;
-            this.logger.log(`[${chainName}] Executing liquidation for user ${user}, maxDebtAsset: ${maxDebtAsset.asset}, debtAmount: ${maxDebtAmount}, debtValueInUsd: ${debtValueInUsd}`);
-
-            if (debtValueInUsd < 1) {
-                this.logger.log(`[${chainName}] Closing loan for user ${user} due to low debt value: ${debtValueInUsd} USDC`);
-                await this.databaseService.prisma.loan.update({
-                    where: {
-                        chainName_user: {
-                            chainName,
-                            user: user.toLowerCase(),
-                        },
-                    },
-                    data: {
-                        isActive: false,
-                        updatedAt: new Date(),
-                    },
-                });
-                return true;
-            }
-            return false;
-        } catch (error) {
-            this.logger.error(`Error checking debt value for user ${user}: ${error.message}`);
-            return false;
-        }
-    }
-
-    private async getTokenPrice(symbol: string): Promise<number> {
-        if (symbol === 'USDC') {
-            return 1;
-        }
-
-        try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 2000); // 2秒超时
-
-            const response = await fetch(
-                `https://api.bybit.com/v5/market/tickers?symbol=${symbol}USDC&category=spot`,
-                { signal: controller.signal }
-            );
-            clearTimeout(timeoutId);
-
-            const data = await response.json();
-            if (data.retCode === 0 && data.result.list && data.result.list.length > 0) {
-                return parseFloat(data.result.list[0].lastPrice);
-            }
-            throw new Error(`Failed to get price for ${symbol}`);
-        } catch (error) {
-            if (error.name === 'AbortError') {
-                this.logger.error(`Timeout getting price for ${symbol}`);
-                throw new Error(`Timeout getting price for ${symbol}`);
-            }
-            this.logger.error(`Error getting price for ${symbol}: ${error.message}`);
-            throw error;
-        }
+    private async getTokenPrice(chainName: string, tokenAddress: string): Promise<number> {
+        const priceOracle = this.priceOracleCache.get(chainName);
+        const price = await priceOracle.getAssetPrice(tokenAddress);
+        return Number(price) / 1e8;
     }
 
     // 在服务销毁时清理定时器
     async onModuleDestroy() {
         if (this.checkInterval) {
             clearInterval(this.checkInterval);
-        }
-        if (this.heartbeatInterval) {
-            clearInterval(this.heartbeatInterval);
         }
     }
 } 

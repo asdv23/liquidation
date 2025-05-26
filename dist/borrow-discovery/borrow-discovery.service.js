@@ -18,7 +18,6 @@ const config_1 = require("@nestjs/config");
 const database_service_1 = require("../database/database.service");
 const fs = require("fs");
 const path = require("path");
-const node_fetch_1 = require("node-fetch");
 let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoveryService {
     constructor(chainService, configService, databaseService) {
         this.chainService = chainService;
@@ -27,6 +26,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         this.logger = new common_1.Logger(BorrowDiscoveryService_1.name);
         this.activeLoans = new Map();
         this.tokenCache = new Map();
+        this.lastLiquidationAttempt = new Map();
         this.LIQUIDATION_THRESHOLD = 1.005;
         this.CRITICAL_THRESHOLD = 1.01;
         this.HEALTH_FACTOR_THRESHOLD = 1.02;
@@ -34,6 +34,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         this.providerCache = new Map();
         this.signerCache = new Map();
         this.dataProviderCache = new Map();
+        this.priceOracleCache = new Map();
         this.MIN_WAIT_TIME = this.configService.get('MIN_CHECK_INTERVAL', 1000);
         this.MAX_WAIT_TIME = this.configService.get('MAX_CHECK_INTERVAL', 30 * 60 * 1000);
         this.PRIVATE_KEY = this.configService.get('PRIVATE_KEY');
@@ -61,7 +62,8 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                 this.contractCache.set(chainName, contract);
                 const addressesProviderAddress = await contract.ADDRESSES_PROVIDER();
                 const addressesProviderAbi = [
-                    'function getPoolDataProvider() view returns (address)'
+                    'function getPoolDataProvider() view returns (address)',
+                    'function getPriceOracle() view returns (address)'
                 ];
                 const addressesProvider = new ethers_1.ethers.Contract(addressesProviderAddress, addressesProviderAbi, signer);
                 const dataProviderAddress = await addressesProvider.getPoolDataProvider();
@@ -70,7 +72,13 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                 ];
                 const dataProvider = new ethers_1.ethers.Contract(dataProviderAddress, dataProviderAbi, signer);
                 this.dataProviderCache.set(chainName, dataProvider);
-                this.logger.log(`[${chainName}] Initialized provider, signer, contract and dataProvider`);
+                const priceOracleAddress = await addressesProvider.getPriceOracle();
+                const priceOracleAbi = [
+                    'function getAssetPrice(address asset) view returns (uint256)'
+                ];
+                const priceOracle = new ethers_1.ethers.Contract(priceOracleAddress, priceOracleAbi, signer);
+                this.priceOracleCache.set(chainName, priceOracle);
+                this.logger.log(`[${chainName}] Initialized provider, signer, contract, dataProvider and priceOracle`);
             }
             catch (error) {
                 this.logger.error(`[${chainName}] Failed to initialize resources: ${error.message}`);
@@ -112,6 +120,10 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
     }
     async getTokenInfo(chainName, address, provider) {
         const normalizedAddress = address.toLowerCase();
+        const providerToUse = provider || this.providerCache.get(chainName);
+        if (!providerToUse) {
+            throw new Error(`Provider not initialized for chain ${chainName}`);
+        }
         const chainTokens = this.tokenCache.get(chainName);
         if (chainTokens === null || chainTokens === void 0 ? void 0 : chainTokens.has(normalizedAddress)) {
             return chainTokens.get(normalizedAddress);
@@ -133,7 +145,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                 'function symbol() view returns (string)',
                 'function decimals() view returns (uint8)',
             ];
-            const contract = new ethers_1.ethers.Contract(normalizedAddress, erc20Abi, provider);
+            const contract = new ethers_1.ethers.Contract(normalizedAddress, erc20Abi, providerToUse);
             const [symbol, decimals] = await Promise.all([
                 contract.symbol(),
                 contract.decimals(),
@@ -251,7 +263,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                         this.logger.log(`- Receive AToken: ${receiveAToken}`);
                         this.logger.log(`- Transaction Hash: ${(event === null || event === void 0 ? void 0 : event.transactionHash) || ((_a = event === null || event === void 0 ? void 0 : event.log) === null || _a === void 0 ? void 0 : _a.transactionHash)}`);
                         const activeLoansMap = this.activeLoans.get(chainName);
-                        if (activeLoansMap) {
+                        if (activeLoansMap && activeLoansMap.has(user)) {
                             activeLoansMap.delete(user);
                             await this.databaseService.recordLiquidation(chainName, user, liquidator, (event === null || event === void 0 ? void 0 : event.transactionHash) || ((_b = event === null || event === void 0 ? void 0 : event.log) === null || _b === void 0 ? void 0 : _b.transactionHash));
                             this.logger.log(`[${chainName}] Recorded liquidation for user ${user}`);
@@ -307,6 +319,10 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             const activeLoansMap = this.activeLoans.get(chainName);
             if (!activeLoansMap || activeLoansMap.size === 0)
                 return;
+            if (!this.lastLiquidationAttempt.has(chainName)) {
+                this.lastLiquidationAttempt.set(chainName, new Map());
+            }
+            const lastLiquidationMap = this.lastLiquidationAttempt.get(chainName);
             const usersToCheck = Array.from(activeLoansMap.entries())
                 .filter(([_, info]) => info.nextCheckTime <= new Date())
                 .map(([user]) => user);
@@ -324,19 +340,27 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                         continue;
                     const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
                     const totalDebt = Number(ethers_1.ethers.formatUnits(accountData.totalDebtBase, 8));
-                    if (totalDebt === 0) {
+                    if (totalDebt < 1) {
                         activeLoansMap.delete(user);
+                        lastLiquidationMap.delete(user);
                         await this.databaseService.deactivateLoan(chainName, user);
-                        this.logger.log(`[${chainName}] Removed user ${user} from active loans and database as total debt is 0`);
+                        this.logger.log(`[${chainName}] Removed user ${user} from active loans and database as total debt is less than 1 USD`);
                         continue;
                     }
                     if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
-                        this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}, attempting liquidation`);
-                        await this.executeLiquidation(chainName, user, contract);
+                        const lastAttemptHealthFactor = lastLiquidationMap.get(user);
+                        if (lastAttemptHealthFactor === undefined || healthFactor < lastAttemptHealthFactor) {
+                            this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}, attempting liquidation`);
+                            lastLiquidationMap.set(user, healthFactor);
+                            await this.executeLiquidation(chainName, user, healthFactor, contract);
+                        }
+                        else {
+                            this.logger.log(`[${chainName}] Skipping liquidation for user ${user} as current health factor ${healthFactor} is not lower than last attempt ${lastAttemptHealthFactor}`);
+                        }
                         continue;
                     }
-                    if (healthFactor <= this.HEALTH_FACTOR_THRESHOLD) {
-                        this.logger.log(`[${chainName}] Health factor ${healthFactor} <= ${this.HEALTH_FACTOR_THRESHOLD} reached for user ${user}`);
+                    if (lastLiquidationMap.has(user)) {
+                        lastLiquidationMap.delete(user);
                     }
                     const waitTime = this.calculateWaitTime(healthFactor);
                     const nextCheckTime = new Date(Date.now() + waitTime);
@@ -407,7 +431,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             (2 - this.HEALTH_FACTOR_THRESHOLD);
         return Math.min(Math.floor(baseTime + (maxTime - baseTime) * Math.log1p(factor)), this.MAX_WAIT_TIME);
     }
-    async executeLiquidation(chainName, user, contract) {
+    async executeLiquidation(chainName, user, healthFactor, contract) {
         try {
             const userConfig = await contract.getUserConfiguration(user);
             const reservesList = await contract.getReservesList();
@@ -457,76 +481,23 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                 this.logger.log(`[${chainName}] No debt found for user ${user}`);
                 return;
             }
-            const shouldClose = await this.checkAndCloseLowValueLoan(chainName, user, maxDebtAsset, maxDebtAmount);
-            if (shouldClose) {
-                return;
-            }
+            const tokenPrice = await this.getTokenPrice(chainName, maxDebtAsset.asset);
+            const tokenInfo = await this.getTokenInfo(chainName, maxDebtAsset.asset);
+            const debtValueInUsd = Number(maxDebtAmount) * tokenPrice / (10 ** tokenInfo.decimals);
+            this.logger.log(`[${chainName}] Executing liquidation for user ${user}, healthFactor: ${healthFactor}, maxDebtAsset: ${maxDebtAsset.asset} (${tokenInfo.symbol}), debtAmount: ${ethers_1.ethers.formatUnits(maxDebtAmount, tokenInfo.decimals)} ${tokenInfo.symbol}, debtValueInUsd: ${debtValueInUsd.toFixed(2)} USD`);
         }
         catch (error) {
             this.logger.error(`[${chainName}] Error executing liquidation for user ${user}: ${error.message}`);
         }
     }
-    async checkAndCloseLowValueLoan(chainName, user, maxDebtAsset, maxDebtAmount) {
-        try {
-            const tokenAddress = maxDebtAsset.asset;
-            const provider = await this.chainService.getProvider(chainName);
-            const tokenInfo = await this.getTokenInfo(chainName, tokenAddress, provider);
-            const price = await this.getTokenPrice(tokenInfo.symbol);
-            const debtValueInUsd = Number(maxDebtAmount) * price / 10 ** tokenInfo.decimals;
-            this.logger.log(`[${chainName}] Executing liquidation for user ${user}, maxDebtAsset: ${maxDebtAsset.asset}, debtAmount: ${maxDebtAmount}, debtValueInUsd: ${debtValueInUsd}`);
-            if (debtValueInUsd < 1) {
-                this.logger.log(`[${chainName}] Closing loan for user ${user} due to low debt value: ${debtValueInUsd} USDC`);
-                await this.databaseService.prisma.loan.update({
-                    where: {
-                        chainName_user: {
-                            chainName,
-                            user: user.toLowerCase(),
-                        },
-                    },
-                    data: {
-                        isActive: false,
-                        updatedAt: new Date(),
-                    },
-                });
-                return true;
-            }
-            return false;
-        }
-        catch (error) {
-            this.logger.error(`Error checking debt value for user ${user}: ${error.message}`);
-            return false;
-        }
-    }
-    async getTokenPrice(symbol) {
-        if (symbol === 'USDC') {
-            return 1;
-        }
-        try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 2000);
-            const response = await (0, node_fetch_1.default)(`https://api.bybit.com/v5/market/tickers?symbol=${symbol}USDC&category=spot`, { signal: controller.signal });
-            clearTimeout(timeoutId);
-            const data = await response.json();
-            if (data.retCode === 0 && data.result.list && data.result.list.length > 0) {
-                return parseFloat(data.result.list[0].lastPrice);
-            }
-            throw new Error(`Failed to get price for ${symbol}`);
-        }
-        catch (error) {
-            if (error.name === 'AbortError') {
-                this.logger.error(`Timeout getting price for ${symbol}`);
-                throw new Error(`Timeout getting price for ${symbol}`);
-            }
-            this.logger.error(`Error getting price for ${symbol}: ${error.message}`);
-            throw error;
-        }
+    async getTokenPrice(chainName, tokenAddress) {
+        const priceOracle = this.priceOracleCache.get(chainName);
+        const price = await priceOracle.getAssetPrice(tokenAddress);
+        return Number(price) / 1e8;
     }
     async onModuleDestroy() {
         if (this.checkInterval) {
             clearInterval(this.checkInterval);
-        }
-        if (this.heartbeatInterval) {
-            clearInterval(this.heartbeatInterval);
         }
     }
 };

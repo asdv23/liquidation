@@ -80,7 +80,7 @@ export class DatabaseService implements OnModuleInit {
                 where: {
                     chainName_user: {
                         chainName,
-                        user,
+                        user: user.toLowerCase(),
                     },
                 },
             });
@@ -98,7 +98,7 @@ export class DatabaseService implements OnModuleInit {
                 where: {
                     chainName_user: {
                         chainName,
-                        user,
+                        user: user.toLowerCase(),
                     },
                 },
                 data: {
@@ -135,11 +135,12 @@ export class DatabaseService implements OnModuleInit {
                 where: {
                     chainName_user: {
                         chainName,
-                        user,
+                        user: user.toLowerCase(),
                     },
                 },
                 data: {
                     isActive: false,
+                    updatedAt: new Date(),
                 },
             });
         } catch (error) {

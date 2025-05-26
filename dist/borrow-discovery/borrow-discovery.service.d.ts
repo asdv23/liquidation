@@ -9,6 +9,7 @@ export declare class BorrowDiscoveryService implements OnModuleInit, OnModuleDes
     private readonly logger;
     private activeLoans;
     private tokenCache;
+    private lastLiquidationAttempt;
     private readonly LIQUIDATION_THRESHOLD;
     private readonly CRITICAL_THRESHOLD;
     private readonly HEALTH_FACTOR_THRESHOLD;
@@ -16,11 +17,11 @@ export declare class BorrowDiscoveryService implements OnModuleInit, OnModuleDes
     private readonly MAX_WAIT_TIME;
     private readonly PRIVATE_KEY;
     private checkInterval;
-    private heartbeatInterval;
     private contractCache;
     private providerCache;
     private signerCache;
     private dataProviderCache;
+    private priceOracleCache;
     constructor(chainService: ChainService, configService: ConfigService, databaseService: DatabaseService);
     onModuleInit(): Promise<void>;
     private initializeResources;
@@ -38,7 +39,6 @@ export declare class BorrowDiscoveryService implements OnModuleInit, OnModuleDes
     private calculateHealthFactor;
     private calculateWaitTime;
     private executeLiquidation;
-    private checkAndCloseLowValueLoan;
     private getTokenPrice;
     onModuleDestroy(): Promise<void>;
 }

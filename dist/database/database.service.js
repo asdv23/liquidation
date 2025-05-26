@@ -79,7 +79,7 @@ let DatabaseService = DatabaseService_1 = class DatabaseService {
                 where: {
                     chainName_user: {
                         chainName,
-                        user,
+                        user: user.toLowerCase(),
                     },
                 },
             });
@@ -94,7 +94,7 @@ let DatabaseService = DatabaseService_1 = class DatabaseService {
                 where: {
                     chainName_user: {
                         chainName,
-                        user,
+                        user: user.toLowerCase(),
                     },
                 },
                 data: {
@@ -128,11 +128,12 @@ let DatabaseService = DatabaseService_1 = class DatabaseService {
                 where: {
                     chainName_user: {
                         chainName,
-                        user,
+                        user: user.toLowerCase(),
                     },
                 },
                 data: {
                     isActive: false,
+                    updatedAt: new Date(),
                 },
             });
         }
