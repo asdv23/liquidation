@@ -52,7 +52,10 @@ contract FlashLoanLiquidation is Initializable, UUPSUpgradeable, OwnableUpgradea
         override
         returns (bool)
     {
-        if (msg.sender != address(aave_v3_pool)) revert("Caller must be pool");
+        if (msg.sender != address(aave_v3_pool)) revert("Caller must be aave v3 pool");
+
+        // remove warning
+        _initiator;
 
         // 解码参数
         (address collateralAsset, address user, bool receiveAToken) = abi.decode(params, (address, address, bool));
@@ -62,21 +65,20 @@ contract FlashLoanLiquidation is Initializable, UUPSUpgradeable, OwnableUpgradea
 
         // 获取抵押品数量
         uint256 collateralAmount = IERC20(collateralAsset).balanceOf(address(this));
-        uint256 amountToRepay = amount + premium;
         IERC20(collateralAsset).approve(address(dex), collateralAmount);
 
         // 用于偿还闪电贷的数量
+        uint256 amountToRepay = amount + premium;
         uint256 actualAmountToRepay =
-            dex.swapTokensForExactTokens(collateralAsset, asset, collateralAmount, amountToRepay, address(this));
+            dex.swapTokensForExactTokens(collateralAsset, asset, amountToRepay, collateralAmount, address(this));
         if (IERC20(asset).balanceOf(address(this)) < amountToRepay) revert("Insufficient balance to repay flash loan");
         IERC20(asset).approve(address(aave_v3_pool), amountToRepay);
 
         // 剩余抵押品换成 usdc
         uint256 actualAmountToSwap = 0;
         if (collateralAmount > actualAmountToRepay) {
-            actualAmountToSwap = dex.swapTokensForExactTokens(
-                collateralAsset, usdc, collateralAmount - actualAmountToRepay, 0, address(this)
-            );
+            actualAmountToSwap =
+                dex.swapExactTokensForTokens(collateralAsset, usdc, collateralAmount - actualAmountToRepay, 0, owner());
         }
 
         emit Liquidation(user, asset, amount, collateralAsset, collateralAmount, actualAmountToSwap);

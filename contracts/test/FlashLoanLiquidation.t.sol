@@ -29,20 +29,20 @@ contract FlashLoanLiquidationTest is Test {
         factory = address(0x222);
         dex = new UniswapV3Dex(swapRouter, factory);
 
-        // 部署代理合约
-        ERC1967Proxy proxy = new ERC1967Proxy(
-            address(implementation),
-            abi.encodeWithSelector(FlashLoanLiquidation.initialize.selector, address(pool), address(dex), address(usdc))
-        );
-
-        liquidation = FlashLoanLiquidation(address(proxy));
-
         // 设置测试环境
         pool = address(0x123); // 模拟 Aave Pool
         usdc = address(0x333); // 模拟 USDC
         collateralAsset = address(0x456); // 模拟抵押资产
         debtAsset = address(0x789); // 模拟债务资产
         user = address(0xabc); // 模拟被清算用户
+
+        // 部署代理合约
+        ERC1967Proxy proxy = new ERC1967Proxy(
+            address(implementation),
+            abi.encodeWithSelector(FlashLoanLiquidation.initialize.selector, pool, address(dex), usdc)
+        );
+
+        liquidation = FlashLoanLiquidation(address(proxy));
     }
 
     function testInitialize() public view {
@@ -53,23 +53,7 @@ contract FlashLoanLiquidationTest is Test {
 
     function testExecuteLiquidation() public {
         // 模拟闪电贷回调
-        vm.mockCall(address(pool), abi.encodeWithSelector(IPool.flashLoanSimple.selector), abi.encode());
-
-        // 模拟清算调用
-        vm.mockCall(address(pool), abi.encodeWithSelector(IPool.liquidationCall.selector), abi.encode());
-
-        // 模拟代币余额
-        vm.mockCall(
-            address(collateralAsset),
-            abi.encodeWithSelector(IERC20.balanceOf.selector, address(liquidation)),
-            abi.encode(1000e18)
-        );
-
-        // 模拟代币授权
-        vm.mockCall(address(collateralAsset), abi.encodeWithSelector(IERC20.approve.selector), abi.encode(true));
-
-        // 模拟 DEX 兑换
-        vm.mockCall(address(dex), abi.encodeWithSelector(IDex.swapTokensForExactTokens.selector), abi.encode(500e18));
+        vm.mockCall(pool, abi.encodeWithSelector(IPool.flashLoanSimple.selector), abi.encode());
 
         // 执行清算
         liquidation.executeLiquidation(
@@ -83,23 +67,30 @@ contract FlashLoanLiquidationTest is Test {
 
     function testExecuteOperation() public {
         // 模拟清算调用
-        vm.mockCall(address(pool), abi.encodeWithSelector(IPool.liquidationCall.selector), abi.encode());
+        vm.mockCall(pool, abi.encodeWithSelector(IPool.liquidationCall.selector), abi.encode());
 
         // 模拟代币余额
         vm.mockCall(
-            address(collateralAsset),
+            collateralAsset,
             abi.encodeWithSelector(IERC20.balanceOf.selector, address(liquidation)),
             abi.encode(1000e18)
         );
+        // mock 闪电贷资产余额，确保足够偿还
+        vm.mockCall(
+            debtAsset, abi.encodeWithSelector(IERC20.balanceOf.selector, address(liquidation)), abi.encode(1010e18)
+        );
 
         // 模拟代币授权
-        vm.mockCall(address(collateralAsset), abi.encodeWithSelector(IERC20.approve.selector), abi.encode(true));
+        vm.mockCall(collateralAsset, abi.encodeWithSelector(IERC20.approve.selector), abi.encode(true));
+        vm.mockCall(debtAsset, abi.encodeWithSelector(IERC20.approve.selector), abi.encode(true));
 
         // 模拟 DEX 兑换
         vm.mockCall(address(dex), abi.encodeWithSelector(IDex.swapTokensForExactTokens.selector), abi.encode(500e18));
+        vm.mockCall(address(dex), abi.encodeWithSelector(IDex.swapExactTokensForTokens.selector), abi.encode(0));
 
-        // 执行闪电贷回调
+        // 执行闪电贷回调，伪造 msg.sender 为 pool
         bytes memory params = abi.encode(collateralAsset, user, true);
+        vm.prank(pool);
         liquidation.executeOperation(
             debtAsset,
             1000e18,
@@ -112,23 +103,24 @@ contract FlashLoanLiquidationTest is Test {
     function testWithdrawToken() public {
         // 模拟代币余额
         vm.mockCall(
-            address(collateralAsset),
+            collateralAsset,
             abi.encodeWithSelector(IERC20.balanceOf.selector, address(liquidation)),
             abi.encode(1000e18)
         );
 
         // 模拟代币转账
-        vm.mockCall(address(collateralAsset), abi.encodeWithSelector(IERC20.transfer.selector), abi.encode(true));
+        vm.mockCall(collateralAsset, abi.encodeWithSelector(IERC20.transfer.selector), abi.encode(true));
 
         // 执行提取
         liquidation.withdrawToken(collateralAsset, 1000e18);
     }
 
-    function testFailWithdrawTokenNotOwner() public {
+    function test_RevertWhen_NotOwner() public {
         // 切换到非所有者地址
         vm.prank(address(0x999));
 
         // 执行提取（应该失败）
+        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", address(0x999)));
         liquidation.withdrawToken(collateralAsset, 1000e18);
     }
 }
