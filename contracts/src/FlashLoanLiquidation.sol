@@ -1,4 +1,4 @@
-    // SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.22;
 
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
@@ -107,15 +107,22 @@ contract FlashLoanLiquidation is Initializable, UUPSUpgradeable, OwnableUpgradea
         return aave_v3_pool;
     }
 
-    // 增加 executeLiquidation 函数，供测试调用
-    function executeLiquidation(
-        address collateralAsset,
-        address debtAsset,
-        address user,
-        uint256 amount,
-        bool receiveAToken
-    ) external onlyOwner {
-        bytes memory params = abi.encode(collateralAsset, user, receiveAToken);
+    /**
+     * @notice 执行闪电贷清算
+     * @param collateralAsset 抵押品资产地址
+     * @param debtAsset 债务资产地址
+     * @param user 用户地址
+     * @param amount 债务数量
+     */
+    function executeLiquidation(address collateralAsset, address debtAsset, address user, uint256 amount)
+        external
+        onlyOwner
+    {
+        // 先检查用户的健康因子是否小于 1，小于 1 再执行闪电贷进行清算
+        (,,,,, uint256 healthFactor) = aave_v3_pool.getUserAccountData(user);
+        if (healthFactor >= 1e18) revert("Health factor is greater than 1");
+
+        bytes memory params = abi.encode(collateralAsset, user, false);
         aave_v3_pool.flashLoanSimple(address(this), debtAsset, amount, params, 0);
     }
 }

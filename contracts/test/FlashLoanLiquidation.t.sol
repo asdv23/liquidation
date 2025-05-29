@@ -18,7 +18,6 @@ contract FlashLoanLiquidationTest is Test {
     address public debtAsset;
     address public user;
     address public swapRouter;
-    address public factory;
 
     function setUp() public {
         // 部署实现合约
@@ -26,8 +25,9 @@ contract FlashLoanLiquidationTest is Test {
 
         // 部署 DEX
         swapRouter = address(0x111);
-        factory = address(0x222);
-        dex = new UniswapV3Dex(swapRouter, factory);
+        UniswapV3Dex dexImpl = new UniswapV3Dex();
+        bytes memory dexInitData = abi.encodeWithSelector(UniswapV3Dex.initialize.selector, swapRouter);
+        dex = UniswapV3Dex(address(new ERC1967Proxy(address(dexImpl), dexInitData)));
 
         // 设置测试环境
         pool = address(0x123); // 模拟 Aave Pool
@@ -52,6 +52,13 @@ contract FlashLoanLiquidationTest is Test {
     }
 
     function testExecuteLiquidation() public {
+        // 模拟健康因子检查
+        vm.mockCall(
+            pool,
+            abi.encodeWithSelector(IPool.getUserAccountData.selector, user),
+            abi.encode(0, 0, 0, 0, 0, 0.5e18) // 健康因子为0.5
+        );
+
         // 模拟闪电贷回调
         vm.mockCall(pool, abi.encodeWithSelector(IPool.flashLoanSimple.selector), abi.encode());
 
@@ -60,8 +67,7 @@ contract FlashLoanLiquidationTest is Test {
             collateralAsset,
             debtAsset,
             user,
-            1000e18, // 清算数量
-            true // 接收 aToken
+            1000e18 // 清算数量
         );
     }
 

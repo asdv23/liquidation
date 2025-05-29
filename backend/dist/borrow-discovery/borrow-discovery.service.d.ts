@@ -22,11 +22,17 @@ export declare class BorrowDiscoveryService implements OnModuleInit, OnModuleDes
     private signerCache;
     private dataProviderCache;
     private priceOracleCache;
+    private flashLoanLiquidationCache;
+    private abiCache;
+    private multicallCache;
     constructor(chainService: ChainService, configService: ConfigService, databaseService: DatabaseService);
+    private initializeAbis;
     onModuleInit(): Promise<void>;
     private initializeResources;
     private getContract;
     private getDataProvider;
+    private getFlashLoanLiquidation;
+    private getMulticall;
     private loadTokenCache;
     private getTokenInfo;
     private formatAmount;

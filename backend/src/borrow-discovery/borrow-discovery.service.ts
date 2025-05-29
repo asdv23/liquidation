@@ -44,6 +44,9 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
     private signerCache: Map<string, ethers.Signer> = new Map(); // Signer 缓存
     private dataProviderCache: Map<string, ethers.Contract> = new Map(); // DataProvider 缓存
     private priceOracleCache: Map<string, ethers.Contract> = new Map(); // PriceOracle 缓存
+    private flashLoanLiquidationCache: Map<string, ethers.Contract> = new Map(); // FlashLoanLiquidation 合约缓存
+    private abiCache: Map<string, any> = new Map(); // 新增：ABI 缓存
+    private multicallCache: Map<string, ethers.Contract> = new Map(); // 新增：multicall 合约缓存
 
     constructor(
         private readonly chainService: ChainService,
@@ -56,8 +59,33 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         this.PRIVATE_KEY = this.configService.get<string>('PRIVATE_KEY');
     }
 
+    private async initializeAbis() {
+        try {
+            // 初始化所有需要的 ABI
+            const abiPaths = {
+                multicall: path.join(process.cwd(), 'abi', 'Multicall.json'),
+                erc20: path.join(process.cwd(), 'abi', 'ERC20.json'),
+                flashLoanLiquidation: path.join(process.cwd(), 'abi', 'FlashLoanLiquidation.json'),
+                addressesProvider: path.join(process.cwd(), 'abi', 'AddressesProvider.json'),
+                dataProvider: path.join(process.cwd(), 'abi', 'DataProvider.json'),
+                priceOracle: path.join(process.cwd(), 'abi', 'PriceOracle.json')
+            };
+
+            for (const [name, abiPath] of Object.entries(abiPaths)) {
+                const abi = JSON.parse(fs.readFileSync(abiPath, 'utf8'));
+                this.abiCache.set(name, abi);
+            }
+
+            this.logger.log('All ABIs initialized successfully');
+        } catch (error) {
+            this.logger.error(`Error initializing ABIs: ${error.message}`);
+            throw error;
+        }
+    }
+
     async onModuleInit() {
         this.logger.log('BorrowDiscoveryService initializing...');
+        await this.initializeAbis(); // 新增：初始化 ABI
         await this.initializeResources();
         await this.loadTokenCache();
         await this.loadActiveLoans();
@@ -77,49 +105,53 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 const signer = new ethers.Wallet(this.PRIVATE_KEY, provider);
                 this.signerCache.set(chainName, signer);
 
+                // 初始化 multicall 合约
+                const multicallContract = new ethers.Contract(
+                    '0xcA11bde05977b3631167028862bE2a173976CA11',
+                    this.abiCache.get('multicall'),
+                    signer
+                );
+                this.multicallCache.set(chainName, multicallContract);
+
                 // 初始化合约
                 const config = this.chainService.getChainConfig(chainName);
-                const abiPath = path.join(process.cwd(), 'abi', `${chainName.toUpperCase()}_AAVE_V3_POOL_ABI.json`);
-                const abi = JSON.parse(fs.readFileSync(abiPath, 'utf8'));
                 const contract = new ethers.Contract(
                     config.contracts.lendingPool,
-                    abi,
+                    this.abiCache.get('aaveV3Pool'),
                     signer
                 );
                 this.contractCache.set(chainName, contract);
 
+                // 初始化 FlashLoanLiquidation 合约
+                const flashLoanLiquidation = new ethers.Contract(
+                    config.contracts.flashLoanLiquidation,
+                    this.abiCache.get('flashLoanLiquidation'),
+                    signer
+                );
+                this.flashLoanLiquidationCache.set(chainName, flashLoanLiquidation);
+
                 // 初始化 DataProvider
                 const addressesProviderAddress = await contract.ADDRESSES_PROVIDER();
-                const addressesProviderAbi = [
-                    'function getPoolDataProvider() view returns (address)',
-                    'function getPriceOracle() view returns (address)'
-                ];
                 const addressesProvider = new ethers.Contract(
                     addressesProviderAddress,
-                    addressesProviderAbi,
+                    this.abiCache.get('addressesProvider'),
                     signer
                 );
 
                 // dataProvider
                 const dataProviderAddress = await addressesProvider.getPoolDataProvider();
-                const dataProviderAbi = [
-                    'function getUserReserveData(address asset, address user) view returns (uint256 currentATokenBalance, uint256 currentStableDebt, uint256 currentVariableDebt, uint256 principalStableDebt, uint256 scaledVariableDebt, uint256 stableBorrowRate, uint256 liquidityRate, uint40 stableRateLastUpdated, bool usageAsCollateralEnabled)'
-                ];
                 const dataProvider = new ethers.Contract(
                     dataProviderAddress,
-                    dataProviderAbi,
+                    this.abiCache.get('dataProvider'),
                     signer
                 );
                 this.dataProviderCache.set(chainName, dataProvider);
 
                 // priceOracle
                 const priceOracleAddress = await addressesProvider.getPriceOracle();
-                const priceOracleAbi = [
-                    'function getAssetPrice(address asset) view returns (uint256)'
-                ];
                 const priceOracle = new ethers.Contract(
                     priceOracleAddress,
-                    priceOracleAbi,
+                    this.abiCache.get('priceOracle'),
                     signer
                 );
                 this.priceOracleCache.set(chainName, priceOracle);
@@ -145,6 +177,22 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             throw new Error(`DataProvider not initialized for chain ${chainName}`);
         }
         return dataProvider;
+    }
+
+    private getFlashLoanLiquidation(chainName: string): ethers.Contract {
+        const contract = this.flashLoanLiquidationCache.get(chainName);
+        if (!contract) {
+            throw new Error(`FlashLoanLiquidation contract not initialized for chain ${chainName}`);
+        }
+        return contract;
+    }
+
+    private getMulticall(chainName: string): ethers.Contract {
+        const multicall = this.multicallCache.get(chainName);
+        if (!multicall) {
+            throw new Error(`Multicall contract not initialized for chain ${chainName}`);
+        }
+        return multicall;
     }
 
     private async loadTokenCache() {
@@ -600,68 +648,117 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
 
     private async executeLiquidation(chainName: string, user: string, healthFactor: number, contract: ethers.Contract) {
         try {
-            // 1. 获取用户的配置信息
-            const userConfig = await contract.getUserConfiguration(user);
-
-            // 2. 获取所有储备资产列表
-            const reservesList = await contract.getReservesList();
-
-            // 3. 使用 multicall 批量查询所有借贷资产的债务数据
-            const multicallAddress = '0xcA11bde05977b3631167028862bE2a173976CA11';
-            const multicallAbi = [
-                'function aggregate(tuple(address target, bytes callData)[] calls) view returns (uint256 blockNumber, bytes[] returnData)'
+            // 1. 使用 multicall 批量获取用户配置和储备资产列表
+            const multicall = this.getMulticall(chainName);
+            const calls = [
+                {
+                    target: contract.target,
+                    callData: contract.interface.encodeFunctionData('getUserConfiguration', [user])
+                },
+                {
+                    target: contract.target,
+                    callData: contract.interface.encodeFunctionData('getReservesList')
+                }
             ];
-            const multicallContract = new ethers.Contract(multicallAddress, multicallAbi, contract.runner);
+
+            const [, returnData] = await multicall.aggregate(calls);
+            const userConfig = contract.interface.decodeFunctionResult('getUserConfiguration', returnData[0]);
+            const reservesList = contract.interface.decodeFunctionResult('getReservesList', returnData[1]);
+
+            // 2. 使用 multicall 批量查询所有借贷资产的债务数据
             const dataProvider = this.getDataProvider(chainName);
 
             // 准备 multicall 调用数据
-            const calls = [];
+            const reserveCalls = [];
             const borrowingAssets = [];
+            const collateralAssets = [];
 
+            // 优化：使用单个循环处理所有资产
             for (let i = 0; i < reservesList.length; i++) {
                 const asset = reservesList[i];
+                // return (self.data >> (reserveIndex << 1)) & 1 != 0;
                 const isBorrowing = (BigInt(userConfig.data) >> (BigInt(i) << BigInt(1))) !== BigInt(0);
+                // return (self.data >> ((reserveIndex << 1) + 1)) & 1 != 0;
+                const isUsingAsCollateral = ((BigInt(userConfig.data) >> ((BigInt(i) << BigInt(1)) + BigInt(1))) & BigInt(1)) === BigInt(0);
 
-                if (isBorrowing) {
-                    borrowingAssets.push(asset);
-                    calls.push({
+                if (isBorrowing || isUsingAsCollateral) {
+                    reserveCalls.push({
                         target: dataProvider.target,
                         callData: dataProvider.interface.encodeFunctionData('getUserReserveData', [asset, user])
                     });
+                    if (isBorrowing) {
+                        borrowingAssets.push(asset);
+                    }
+                    if (isUsingAsCollateral) {
+                        collateralAssets.push(asset);
+                    }
                 }
             }
 
-            if (calls.length === 0) {
-                this.logger.log(`[${chainName}] No borrowing assets found for user ${user}`);
+            if (reserveCalls.length === 0) {
+                this.logger.log(`[${chainName}] No borrowing or collateral assets found for user ${user}`);
                 return;
             }
 
             // 执行批量查询
-            const [, returnData] = await multicallContract.aggregate(calls);
+            const [, reserveReturnData] = await multicall.aggregate(reserveCalls);
 
-            // 解析返回数据并找出最大债务资产
+            // 解析返回数据并处理债务和抵押品
             let maxDebtAsset = null;
             let maxDebtAmount = BigInt(0);
+            let maxCollateralAsset = null;
+            let maxCollateralValue = BigInt(0);
+            let callIndex = 0;
 
-            for (let i = 0; i < borrowingAssets.length; i++) {
-                const asset = borrowingAssets[i];
-                const userReserveData = dataProvider.interface.decodeFunctionResult(
-                    'getUserReserveData',
-                    returnData[i]
-                );
+            for (let i = 0; i < reservesList.length; i++) {
+                const asset = reservesList[i];
+                const isBorrowing = (BigInt(userConfig.data) >> (BigInt(i) << BigInt(1))) !== BigInt(0);
+                const isUsingAsCollateral = ((BigInt(userConfig.data) >> ((BigInt(i) << BigInt(1)) + BigInt(1))) & BigInt(1)) === BigInt(0);
 
-                const currentStableDebt = BigInt(userReserveData.currentStableDebt);
-                const currentVariableDebt = BigInt(userReserveData.currentVariableDebt);
-                const totalDebt = currentStableDebt + currentVariableDebt;
+                if (isBorrowing || isUsingAsCollateral) {
+                    const userReserveData = dataProvider.interface.decodeFunctionResult(
+                        'getUserReserveData',
+                        reserveReturnData[callIndex]
+                    );
+                    callIndex++;
 
-                if (totalDebt > maxDebtAmount) {
-                    maxDebtAmount = totalDebt;
-                    maxDebtAsset = {
-                        asset,
-                        currentStableDebt,
-                        currentVariableDebt,
-                        usageAsCollateralEnabled: userReserveData.usageAsCollateralEnabled
-                    };
+                    // 处理债务数据
+                    if (isBorrowing) {
+                        const currentStableDebt = BigInt(userReserveData.currentStableDebt);
+                        const currentVariableDebt = BigInt(userReserveData.currentVariableDebt);
+                        const totalDebt = currentStableDebt + currentVariableDebt;
+
+                        if (totalDebt > maxDebtAmount) {
+                            maxDebtAmount = totalDebt;
+                            maxDebtAsset = {
+                                asset,
+                                currentStableDebt,
+                                currentVariableDebt,
+                                usageAsCollateralEnabled: userReserveData.usageAsCollateralEnabled
+                            };
+                        }
+                    }
+
+                    // 处理抵押品数据
+                    if (isUsingAsCollateral) {
+                        const collateralAmount = BigInt(userReserveData.currentATokenBalance);
+                        if (collateralAmount > BigInt(0)) {
+                            const tokenInfo = await this.getTokenInfo(chainName, asset);
+                            const price = await this.getTokenPrice(chainName, asset);
+                            // 使用 BigInt 计算 USD 价值，避免精度损失
+                            const collateralValue = (collateralAmount * BigInt(Math.floor(price * 1e8))) / BigInt(10 ** tokenInfo.decimals);
+
+                            if (collateralValue > maxCollateralValue) {
+                                maxCollateralValue = collateralValue;
+                                maxCollateralAsset = {
+                                    asset,
+                                    balance: collateralAmount,
+                                    tokenInfo,
+                                    price
+                                };
+                            }
+                        }
+                    }
                 }
             }
 
@@ -670,47 +767,55 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 return;
             }
 
-            // 4. 对最大债务资产执行清算
+            if (!maxCollateralAsset) {
+                this.logger.log(`[${chainName}] No collateral assets found for user ${user}`);
+                return;
+            }
+
+            // 3. 对最大债务资产执行清算
             const tokenPrice = await this.getTokenPrice(chainName, maxDebtAsset.asset);
             const tokenInfo = await this.getTokenInfo(chainName, maxDebtAsset.asset);
             const debtValueInUsd = Number(maxDebtAmount) * tokenPrice / (10 ** tokenInfo.decimals);
             this.logger.log(`[${chainName}] Executing liquidation for user ${user}, healthFactor: ${healthFactor}, maxDebtAsset: ${maxDebtAsset.asset} (${tokenInfo.symbol}), debtAmount: ${ethers.formatUnits(maxDebtAmount, tokenInfo.decimals)} ${tokenInfo.symbol}, debtValueInUsd: ${debtValueInUsd.toFixed(2)} USD`);
 
-            // try {
-            //     const hasVariableDebt = maxDebtAsset.currentVariableDebt > BigInt(0);
-            //     const debtAmount = hasVariableDebt
-            //         ? maxDebtAsset.currentVariableDebt
-            //         : maxDebtAsset.currentStableDebt;
+            // 4. 执行闪电贷清算
+            const flashLoanLiquidation = this.getFlashLoanLiquidation(chainName);
 
-            //     // 执行闪电贷清算
-            //     const flashLoanParams = {
-            //         receiverAddress: contract.target,
-            //         asset: maxDebtAsset.asset,
-            //         amount: debtAmount,
-            //         params: ethers.AbiCoder.defaultAbiCoder().encode(
-            //             ['address', 'bool'],
-            //             [user, false] // user address and receiveAToken flag
-            //         ),
-            //         referralCode: 0
-            //     };
+            const collateralValueInUsd = Number(maxCollateralValue) / 1e8; // 转换回 USD 显示值
+            this.logger.log(`[${chainName}] Selected collateral asset: ${maxCollateralAsset.asset} (${maxCollateralAsset.tokenInfo.symbol})`);
+            this.logger.log(`- Balance: ${ethers.formatUnits(maxCollateralAsset.balance, maxCollateralAsset.tokenInfo.decimals)} ${maxCollateralAsset.tokenInfo.symbol}`);
+            this.logger.log(`- Value in USD: ${collateralValueInUsd.toFixed(2)} USD`);
 
-            //     // 发送清算交易
-            //     const tx = await contract.flashLoanSimple(
-            //         flashLoanParams.receiverAddress,
-            //         flashLoanParams.asset,
-            //         flashLoanParams.amount,
-            //         flashLoanParams.params,
-            //         flashLoanParams.referralCode
-            //     );
+            // 使用全部债务数量进行清算
+            const liquidationAmount = maxDebtAmount;
 
-            //     this.logger.log(`[${chainName}] Liquidation transaction sent for asset ${maxDebtAsset.asset}: ${tx.hash}`);
+            this.logger.log(`[${chainName}] Executing flash loan liquidation:`);
+            this.logger.log(`- User: ${user}`);
+            this.logger.log(`- Collateral Asset: ${maxCollateralAsset.asset} (${maxCollateralAsset.tokenInfo.symbol})`);
+            this.logger.log(`- Debt Asset: ${maxDebtAsset.asset} (${tokenInfo.symbol})`);
+            this.logger.log(`- Liquidation Amount: ${ethers.formatUnits(liquidationAmount, tokenInfo.decimals)} ${tokenInfo.symbol}`);
 
-            //     // 等待交易确认
-            //     const receipt = await tx.wait();
-            //     this.logger.log(`[${chainName}] Liquidation transaction confirmed for asset ${maxDebtAsset.asset}: ${receipt.hash}`);
-            // } catch (error) {
-            //     this.logger.error(`[${chainName}] Error executing liquidation for asset ${maxDebtAsset.asset}: ${error.message}`);
-            // }
+            try {
+                // 获取当前 gas 价格并提高 50%
+                const gasPrice = await flashLoanLiquidation.runner.provider.getFeeData();
+                const maxFeePerGas = gasPrice.maxFeePerGas ? gasPrice.maxFeePerGas * BigInt(15) / BigInt(10) : undefined;
+                const maxPriorityFeePerGas = gasPrice.maxPriorityFeePerGas ? gasPrice.maxPriorityFeePerGas * BigInt(15) / BigInt(10) : undefined;
+
+                const tx = await flashLoanLiquidation.executeLiquidation(
+                    maxCollateralAsset.asset,
+                    maxDebtAsset.asset,
+                    user,
+                    liquidationAmount,
+                    {
+                        maxFeePerGas,
+                        maxPriorityFeePerGas
+                    }
+                );
+                await tx.wait();
+                this.logger.log(`[${chainName}] Flash loan liquidation executed successfully, tx: ${tx.hash}`);
+            } catch (error) {
+                this.logger.error(`[${chainName}] Error executing flash loan liquidation: ${error.message}`);
+            }
         } catch (error) {
             this.logger.error(`[${chainName}] Error executing liquidation for user ${user}: ${error.message}`);
         }
