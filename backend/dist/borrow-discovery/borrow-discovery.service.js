@@ -27,9 +27,9 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         this.activeLoans = new Map();
         this.tokenCache = new Map();
         this.lastLiquidationAttempt = new Map();
-        this.LIQUIDATION_THRESHOLD = 1.0001;
+        this.LIQUIDATION_THRESHOLD = 1.00001;
         this.CRITICAL_THRESHOLD = 1.001;
-        this.HEALTH_FACTOR_THRESHOLD = 1.01;
+        this.HEALTH_FACTOR_THRESHOLD = 1.1;
         this.aaveV3PoolCache = new Map();
         this.providerCache = new Map();
         this.signerCache = new Map();
@@ -39,7 +39,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         this.abiCache = new Map();
         this.multicallCache = new Map();
         this.MIN_WAIT_TIME = this.configService.get('MIN_CHECK_INTERVAL', 1000);
-        this.MAX_WAIT_TIME = this.configService.get('MAX_CHECK_INTERVAL', 30 * 60 * 1000);
+        this.MAX_WAIT_TIME = this.configService.get('MAX_CHECK_INTERVAL', 4 * 60 * 60 * 1000);
         this.PRIVATE_KEY = this.configService.get('PRIVATE_KEY');
     }
     async initializeAbis() {

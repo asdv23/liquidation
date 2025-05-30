@@ -1,8 +1,15 @@
 const { request } = require('graphql-request');
 const { PrismaClient } = require('@prisma/client');
 
+// node test/testTheGraph.js
 const prisma = new PrismaClient();
-const endpoint = 'https://gateway.thegraph.com/api/subgraphs/id/D7mapexM5ZsQckLJai2FawTKXJ7CqYGKM8PErnS3cJi9';
+
+// eth
+const chainName = 'eth';
+const endpoint = 'https://gateway.thegraph.com/api/subgraphs/id/JCNWRypm7FYwV8fx5HhzZPSFaMxgkPuw4TnR3Gpi81zk';
+// base
+// const chainName = 'base';
+// const endpoint = 'https://gateway.thegraph.com/api/subgraphs/id/D7mapexM5ZsQckLJai2FawTKXJ7CqYGKM8PErnS3cJi9';
 
 const PAGE_SIZE = 1000; // 每页查询数量
 
@@ -21,6 +28,7 @@ function formatTimestamp(timestamp) {
 }
 
 // 1745555511: Tue Feb 25 2025 12:31:51 GMT+0800 (中国标准时间)
+// 1745979694: Wed Apr 30 2025 10:21:34 GMT+0800 (中国标准时间)
 async function fetchBorrowsPage(lastTimestamp = null) {
     const query = `{
         borrows(
@@ -76,7 +84,7 @@ async function fetchAndStoreBorrows() {
                     await prisma.loan.upsert({
                         where: {
                             chainName_user: {
-                                chainName: 'base',
+                                chainName: chainName,
                                 user: borrow.account.id.toLowerCase(),
                             },
                         },
@@ -85,7 +93,7 @@ async function fetchAndStoreBorrows() {
                             updatedAt: new Date(),
                         },
                         create: {
-                            chainName: 'base',
+                            chainName: chainName,
                             user: borrow.account.id.toLowerCase(),
                             isActive: true,
                         },

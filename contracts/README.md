@@ -152,3 +152,17 @@ forge verify-contract \
 | constructor | constructor() nonpayable                                                          |                                                                    |
 ╰-------------+-----------------------------------------------------------------------------------+--------------------------------------------------------------------╯
 
+
+## Prod
+### base
+```
+export ETH_RPC_URL=Your URL
+export PRIVATE_KEY=Your Private key
+
+forge script --broadcast \
+--rpc-url $ETH_RPC_URL \
+--private-key $PRIVATE_KEY \
+--sig 'run()' \
+script/deployParameters/DeployETH.s.sol:DeployETH
+```
+

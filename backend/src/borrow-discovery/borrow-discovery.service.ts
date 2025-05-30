@@ -32,9 +32,9 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
     private activeLoans: Map<string, Map<string, LoanInfo>> = new Map();
     private tokenCache: Map<string, Map<string, TokenInfo>> = new Map();
     private lastLiquidationAttempt: Map<string, Map<string, number>> = new Map(); // 新增：记录上次清算尝试的健康因子
-    private readonly LIQUIDATION_THRESHOLD = 1.0001; // 清算阈值
+    private readonly LIQUIDATION_THRESHOLD = 1.00001; // 清算阈值
     private readonly CRITICAL_THRESHOLD = 1.001; // 危险阈值
-    private readonly HEALTH_FACTOR_THRESHOLD = 1.01; // 健康阈值
+    private readonly HEALTH_FACTOR_THRESHOLD = 1.1; // 健康阈值
     private readonly MIN_WAIT_TIME: number; // 最小等待时间（毫秒）
     private readonly MAX_WAIT_TIME: number; // 最大等待时间（毫秒）
     private readonly PRIVATE_KEY: string; // EOA 私钥
@@ -53,9 +53,9 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         private readonly configService: ConfigService,
         private readonly databaseService: DatabaseService,
     ) {
-        // 从环境变量读取配置，默认值：最小200ms，最大30分钟
+        // 从环境变量读取配置，默认值：最小1s，最大4小时
         this.MIN_WAIT_TIME = this.configService.get<number>('MIN_CHECK_INTERVAL', 1000);
-        this.MAX_WAIT_TIME = this.configService.get<number>('MAX_CHECK_INTERVAL', 30 * 60 * 1000);
+        this.MAX_WAIT_TIME = this.configService.get<number>('MAX_CHECK_INTERVAL', 4 * 60 * 60 * 1000);
         this.PRIVATE_KEY = this.configService.get<string>('PRIVATE_KEY');
     }
 
