@@ -5,11 +5,14 @@ const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 
 // eth
-const chainName = 'eth';
-const endpoint = 'https://gateway.thegraph.com/api/subgraphs/id/JCNWRypm7FYwV8fx5HhzZPSFaMxgkPuw4TnR3Gpi81zk';
+// const chainName = 'eth';
+// const endpoint = 'https://gateway.thegraph.com/api/subgraphs/id/JCNWRypm7FYwV8fx5HhzZPSFaMxgkPuw4TnR3Gpi81zk';
 // base
 // const chainName = 'base';
 // const endpoint = 'https://gateway.thegraph.com/api/subgraphs/id/D7mapexM5ZsQckLJai2FawTKXJ7CqYGKM8PErnS3cJi9';
+// op
+const chainName = 'op';
+const endpoint = 'https://gateway.thegraph.com/api/subgraphs/id/3RWFxWNstn4nP3dXiDfKi9GgBoHx7xzc7APkXs1MLEgi';
 
 const PAGE_SIZE = 1000; // 每页查询数量
 

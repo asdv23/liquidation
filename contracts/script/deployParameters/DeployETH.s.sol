@@ -17,7 +17,7 @@ contract DeployETH is Deploy {
     }
 }
 
-contract UpgradeBase is Upgrade {
+contract UpgradeETH is Upgrade {
     function setUp() public override {
         params = UpgradeParams({
             uniswapV3Dex: 0x285FcE70D05e671d92db253B809Ed5FEc19cE7ac,

@@ -159,10 +159,26 @@ forge verify-contract \
 export ETH_RPC_URL=Your URL
 export PRIVATE_KEY=Your Private key
 
+<!-- eth -->
 forge script --broadcast \
 --rpc-url $ETH_RPC_URL \
 --private-key $PRIVATE_KEY \
 --sig 'run()' \
 script/deployParameters/DeployETH.s.sol:DeployETH
+
+<!-- base -->
+forge script --broadcast \
+--rpc-url $BASE_RPC_URL \
+--private-key $PRIVATE_KEY \
+--sig 'run()' \
+script/deployParameters/DeployBase.s.sol:DeployBase
+
+<!-- op -->
+forge script --broadcast \
+--rpc-url $OP_RPC_URL \
+--private-key $PRIVATE_KEY \
+--sig 'run()' \
+script/deployParameters/DeployOP.s.sol:DeployOP
+
 ```
 
