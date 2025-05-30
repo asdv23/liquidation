@@ -14,29 +14,29 @@ function getChainsConfigFromEnv() {
         if (match) {
             const chainKey = match[1].toLowerCase();
             const rpcUrl = process.env[`${chainKey.toUpperCase()}_RPC_URL`];
-            const contractAddress = process.env[`${chainKey.toUpperCase()}_AAVE_V3_POOL`];
-            if (!rpcUrl || !contractAddress) {
-                logger.warn(`Missing configuration for chain ${chainKey}: RPC_URL=${rpcUrl}, CONTRACT=${contractAddress}`);
+            const aavev3Pool = process.env[`${chainKey.toUpperCase()}_AAVE_V3_POOL`];
+            const flashLoanLiquidation = process.env[`${chainKey.toUpperCase()}_FLASH_LOAN_LIQUIDATION`];
+            if (!rpcUrl || !aavev3Pool || !flashLoanLiquidation) {
+                logger.warn(`Missing configuration for chain ${chainKey}: RPC_URL=${rpcUrl}, AAVE_V3_POOL=${aavev3Pool}, FLASH_LOAN_LIQUIDATION=${flashLoanLiquidation}`);
                 continue;
             }
             chains[chainKey] = {
                 name: chainKey,
                 rpcUrl: rpcUrl,
-                chainId: 0,
                 contracts: {
-                    lendingPool: contractAddress,
+                    aavev3Pool,
+                    flashLoanLiquidation,
                 },
                 blockTime: 2,
-                confirmations: 1,
             };
-            logger.log(`Loaded chain config for ${chainKey}: RPC=${rpcUrl}, Contract=${contractAddress}`);
+            logger.log(`Loaded chain config for ${chainKey}: RPC=${rpcUrl}, AAVE_V3_POOL=${aavev3Pool}, FlashLoanLiquidation=${flashLoanLiquidation}`);
         }
     }
     if (Object.keys(chains).length === 0) {
         logger.error('No chain configurations found in environment variables!');
     }
     else {
-        logger.log(`Successfully loaded ${Object.keys(chains).length} chain configurations: ${Object.keys(chains).join(', ')}`);
+        logger.log(`Successfully loaded ${Object.keys(chains).length} chain configurations: ${JSON.stringify(chains, null, 2)}`);
     }
     return chains;
 }

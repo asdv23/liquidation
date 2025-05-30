@@ -7,7 +7,11 @@ import {FlashLoanLiquidation} from "../src/FlashLoanLiquidation.sol";
 import {UniswapV3Dex} from "../src/dex/UniswapV3Dex.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
-contract DeployLiquidation is Script {
+import {DeployParams} from "./Params.s.sol";
+
+abstract contract Deploy is Script {
+    DeployParams public params;
+
     // set values for params and unsupported
     function setUp() public virtual;
 
@@ -18,7 +22,10 @@ contract DeployLiquidation is Script {
         UniswapV3Dex uniswapV3DexImpl = new UniswapV3Dex();
         bytes memory uniswapV3DexInitData = abi.encodeWithSelector(
             UniswapV3Dex.initialize.selector,
-            address(0x2626664c2603336E57B271c5C0b26F421741e481) // Uniswap SwapRouter02
+            address(params.swapRouter02), // Uniswap SwapRouter02
+            address(params.factory), // Uniswap V3 Factory
+            address(params.quoterV2), // Uniswap V3 QuoterV2
+            address(params.usdc) // USDC
         );
         UniswapV3Dex uniswapV3Dex =
             UniswapV3Dex(address(new ERC1967Proxy(address(uniswapV3DexImpl), uniswapV3DexInitData)));
@@ -27,17 +34,16 @@ contract DeployLiquidation is Script {
         FlashLoanLiquidation flashLoanLiquidationImpl = new FlashLoanLiquidation();
         bytes memory flashLoanLiquidationInitData = abi.encodeWithSelector(
             FlashLoanLiquidation.initialize.selector,
-            address(0xA238Dd80C259a72e81d7e4664a9801593F98d1c5), // Aave V3 Pool
-            address(uniswapV3Dex), // UniswapV3Dex
-            address(0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913) // USDC
+            address(params.aaveV3Pool), // Aave V3 Pool
+            address(uniswapV3Dex) // UniswapV3Dex
         );
         FlashLoanLiquidation flashLoanLiquidation = FlashLoanLiquidation(
             address(new ERC1967Proxy(address(flashLoanLiquidationImpl), flashLoanLiquidationInitData))
         );
 
-        vm.stopBroadcast();
+        console2.log("uniswapV3Dex", address(uniswapV3Dex));
+        console2.log("flashLoanLiquidation", address(flashLoanLiquidation));
 
-        console2.log("UniswapV3Dex deployed to:", address(uniswapV3Dex));
-        console2.log("FlashLoanLiquidation deployed to:", address(flashLoanLiquidation));
+        vm.stopBroadcast();
     }
 }

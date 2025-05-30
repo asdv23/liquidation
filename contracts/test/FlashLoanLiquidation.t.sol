@@ -48,7 +48,6 @@ contract FlashLoanLiquidationTest is Test {
     function testInitialize() public view {
         assertEq(address(liquidation.aave_v3_pool()), pool);
         assertEq(address(liquidation.dex()), address(dex));
-        assertEq(liquidation.usdc(), usdc);
     }
 
     function testExecuteLiquidation() public {
@@ -63,12 +62,7 @@ contract FlashLoanLiquidationTest is Test {
         vm.mockCall(pool, abi.encodeWithSelector(IPool.flashLoanSimple.selector), abi.encode());
 
         // 执行清算
-        liquidation.executeLiquidation(
-            collateralAsset,
-            debtAsset,
-            user,
-            1000e18 // 清算数量
-        );
+        liquidation.executeLiquidation(collateralAsset, debtAsset, user);
     }
 
     function testExecuteOperation() public {
@@ -91,8 +85,7 @@ contract FlashLoanLiquidationTest is Test {
         vm.mockCall(debtAsset, abi.encodeWithSelector(IERC20.approve.selector), abi.encode(true));
 
         // 模拟 DEX 兑换
-        vm.mockCall(address(dex), abi.encodeWithSelector(IDex.swapTokensForExactTokens.selector), abi.encode(500e18));
-        vm.mockCall(address(dex), abi.encodeWithSelector(IDex.swapExactTokensForTokens.selector), abi.encode(0));
+        vm.mockCall(address(dex), abi.encodeWithSelector(IDex.swap.selector), abi.encode(500e18));
 
         // 执行闪电贷回调，伪造 msg.sender 为 pool
         bytes memory params = abi.encode(collateralAsset, user, true);

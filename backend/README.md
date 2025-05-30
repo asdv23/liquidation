@@ -2,15 +2,15 @@
 ## 成功清算
 1. 找到主网一笔已清算交易，往前搜索到一个区块高度能清算此笔交易
 2. 本地从这个区块高度 fork 网络
-3. 部署清算合约
-4. 数据库中插入这笔带清算的交易
+3. 部署清算合约，并将合约地址更新到配置文件
+4. 数据库中插入这笔待清算的交易
 5. 程序运行，执行清算成功
 
 ## 失败清算
 1. 找到主网一笔已清算交易，往前搜索到一个区块高度不能清算此笔交易
 2. 本地从这个区块高度 fork 网络
-3. 部署清算合约
-4. 数据库中插入这笔带清算的交易
+3. 部署清算合约，并将合约地址更新到配置文件
+4. 数据库中插入这笔待清算的交易
 5. 程序运行，执行清算失败，仅扣除少量 gas 费。
 
 ## 示例 1
@@ -31,7 +31,7 @@ LiquidationCall - height:30672598
 }
 ```
 ### 2. fork base
-anvil --fork-url https://base-mainnet.g.alchemy.com/v2/LgcBLZ4hzWKCEjxKHFHKtYqC4fYCu_59 --fork-block-number 30672597 --port 8546
+anvil --fork-url https://base-mainnet.g.alchemy.com/v2/0aoAtW5IQvhhwLgW4wFQFbW7eM4czhOb --fork-block-number 30672597 --port 8546
 
 #### 验证可以清算 - 查询链上健康因子
 ```
@@ -56,7 +56,7 @@ curl --location 'http://localhost:8546' \
 #### 验证可以清算 - 解码，并检查 healthFactor＜ 1
 ```
 # 结果复制并修改testHealthFactor.js 
-% node backend/test/testHealthFactor.js 
+% node backend/test/testHealthFactor.js
 
 totalCollateralBase: 145.33942611 USD
 totalDebtBase: 120.84228335 USD
@@ -71,6 +71,16 @@ Private Key: 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 Address: 0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266
 ```
 cd contracts
-export PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
-forge script script/Deploy.s.sol:DeployScript --rpc-url http://localhost:8546 --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+forge script --broadcast \
+--rpc-url http://localhost:8546 \
+--private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+--sig 'run()' \
+script/deployParameters/DeployBase.s.sol:DeployBase
+
+== Logs ==
+  params.aaveV3Pool 0xA238Dd80C259a72e81d7e4664a9801593F98d1c5
+  params.usdc 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
+  params.swapRouter02 0x2626664c2603336E57B271c5C0b26F421741e481
+  params.uniswapV3Dex 0x37767d8102966577A4f5c7930e0657C592E5061b
+  params.flashLoanLiquidation 0x1E5fc0875e2646562Cf694d992182CBb96033Ce4
 ```

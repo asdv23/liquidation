@@ -28,6 +28,15 @@ liquidation/
 └── README.md         # 项目说明文档
 ```
 
+## 合约部署
+```
+forge script --broadcast \
+--rpc-url <RPC-URL> \
+--private-key <PRIVATE_KEY> \
+--sig 'run()' \
+script/deployParameters/Deploy<network>.s.sol:Deploy<network>
+```
+
 ## 项目架构
 
 本项目基于 NestJS 框架，使用 TypeScript 开发，支持多链（如 Base 和 Optimism）监听 Aave V3 合约事件，实时计算用户健康因子（health factor），并在发现不安全贷款时进行记录。

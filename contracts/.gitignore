@@ -1,21 +1,39 @@
-node_modules
+# build and cache
+cache/
+out/
+
+# general
 .env
+.env.bk
+.assets
 
-# Hardhat files
-/cache
-/cache_hardhat
-/artifacts
+# artifacts
+reports/
+diffs/
+downloads/
 
-# TypeChain files
-/typechain
-/typechain-types
+# editors
+.idea
+.vscode
+lcov*
 
-# solidity-coverage files
-/coverage
-/coverage.json
+yarn.lock
+bun.lockb
+node_modules
 
-# Hardhat Ignition default folder for deployments against a local node
-ignition/deployments/chain-31337
+# ignore foundry deploy artifacts
+broadcast/
 
-# Foundry forge build
-/out
+.DS_Store
+
+# certora
+.certora*
+.certora*.json
+**.last_conf*
+certora-logs
+certora_debug_log.txt
+resource_errors.json
+
+# invariants
+_corpus/
+crytic-export/

@@ -17,7 +17,7 @@ export declare class BorrowDiscoveryService implements OnModuleInit, OnModuleDes
     private readonly MAX_WAIT_TIME;
     private readonly PRIVATE_KEY;
     private checkInterval;
-    private contractCache;
+    private aaveV3PoolCache;
     private providerCache;
     private signerCache;
     private dataProviderCache;
@@ -29,7 +29,8 @@ export declare class BorrowDiscoveryService implements OnModuleInit, OnModuleDes
     private initializeAbis;
     onModuleInit(): Promise<void>;
     private initializeResources;
-    private getContract;
+    private getAbi;
+    private getAaveV3Pool;
     private getDataProvider;
     private getFlashLoanLiquidation;
     private getMulticall;
@@ -45,6 +46,7 @@ export declare class BorrowDiscoveryService implements OnModuleInit, OnModuleDes
     private startHealthFactorChecker;
     private formatDate;
     private checkHealthFactorsBatch;
+    private safeStringify;
     private getUserAccountDataBatch;
     private calculateHealthFactor;
     private calculateWaitTime;

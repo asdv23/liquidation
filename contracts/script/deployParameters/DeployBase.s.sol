@@ -1,23 +1,27 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.22;
 
-import {DeployScript} from "../Deploy.s.sol";
-import {RouterParameters} from "../../types/RouterParameters.sol";
+import {Deploy} from "../Deploy.s.sol";
+import {Upgrade} from "../Upgrade.s.sol";
+import {DeployParams, UpgradeParams} from "../Params.s.sol";
 
-contract DeployBase is DeployUniversalRouter {
+contract DeployBase is Deploy {
     function setUp() public override {
-        params = RouterParameters({
-            permit2: 0x000000000022D473030F116dDEE9F6B43aC78BA3,
-            weth9: 0x4200000000000000000000000000000000000006,
-            v2Factory: 0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6,
-            v3Factory: 0x33128a8fC17869897dcE68Ed026d694621f6FDfD,
-            pairInitCodeHash: 0x96e8ac4277198ff8b6f785478aa9a39f403cb768dd02cbee326c3e7da348845f,
-            poolInitCodeHash: 0xe34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54,
-            v4PoolManager: 0x498581fF718922c3f8e6A244956aF099B2652b2b,
-            v3NFTPositionManager: 0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1,
-            v4PositionManager: 0x7C5f5A4bBd8fD63184577525326123B519429bDc
+        params = DeployParams({
+            aaveV3Pool: 0xA238Dd80C259a72e81d7e4664a9801593F98d1c5,
+            swapRouter02: 0x2626664c2603336E57B271c5C0b26F421741e481,
+            factory: 0x33128a8fC17869897dcE68Ed026d694621f6FDfD,
+            quoterV2: 0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a,
+            usdc: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
         });
+    }
+}
 
-        unsupported = 0x9E18Efb3BE848940b0C92D300504Fb08C287FE85;
+contract UpgradeBase is Upgrade {
+    function setUp() public override {
+        params = UpgradeParams({
+            uniswapV3Dex: 0x37767d8102966577A4f5c7930e0657C592E5061b,
+            flashLoanLiquidation: 0x1E5fc0875e2646562Cf694d992182CBb96033Ce4
+        });
     }
 }
