@@ -30,17 +30,26 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         this.LIQUIDATION_THRESHOLD = 1.00001;
         this.CRITICAL_THRESHOLD = 1.001;
         this.HEALTH_FACTOR_THRESHOLD = 1.1;
-        this.aaveV3PoolCache = new Map();
-        this.providerCache = new Map();
-        this.signerCache = new Map();
-        this.dataProviderCache = new Map();
-        this.priceOracleCache = new Map();
-        this.flashLoanLiquidationCache = new Map();
         this.abiCache = new Map();
-        this.multicallCache = new Map();
         this.MIN_WAIT_TIME = this.configService.get('MIN_CHECK_INTERVAL', 1000);
         this.MAX_WAIT_TIME = this.configService.get('MAX_CHECK_INTERVAL', 4 * 60 * 60 * 1000);
+        this.CHAIN_CHECK_TIMEOUT = this.configService.get('CHAIN_CHECK_TIMEOUT', 5000);
         this.PRIVATE_KEY = this.configService.get('PRIVATE_KEY');
+    }
+    async onModuleInit() {
+        this.logger.log('BorrowDiscoveryService initializing...');
+        await this.initializeAbis();
+        await this.loadTokenCache();
+        await this.loadActiveLoans();
+        await this.startListening();
+        this.startHealthFactorChecker();
+    }
+    async onModuleDestroy() {
+        this.logger.log('BorrowDiscoveryService destroying...');
+        if (this.checkInterval) {
+            this.logger.log('Clearing check interval');
+            clearInterval(this.checkInterval);
+        }
     }
     async initializeAbis() {
         try {
@@ -63,45 +72,9 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             throw error;
         }
     }
-    async onModuleInit() {
-        this.logger.log('BorrowDiscoveryService initializing...');
-        await this.initializeAbis();
-        await this.initializeResources();
-        await this.loadTokenCache();
-        await this.loadActiveLoans();
-        await this.startListening();
-        this.startHealthFactorChecker();
-    }
-    async initializeResources() {
-        const chains = this.chainService.getActiveChains();
-        for (const chainName of chains) {
-            try {
-                const provider = await this.chainService.getProvider(chainName);
-                this.providerCache.set(chainName, provider);
-                const signer = new ethers_1.ethers.Wallet(this.PRIVATE_KEY, provider);
-                this.signerCache.set(chainName, signer);
-                this.logger.log(`[${chainName}] Initialized signer: ${signer.address}`);
-                const multicallContract = new ethers_1.ethers.Contract('0xcA11bde05977b3631167028862bE2a173976CA11', this.getAbi('multicall'), signer);
-                this.multicallCache.set(chainName, multicallContract);
-                const config = this.chainService.getChainConfig(chainName);
-                const contract = new ethers_1.ethers.Contract(config.contracts.aavev3Pool, this.getAbi('aaveV3Pool'), signer);
-                this.aaveV3PoolCache.set(chainName, contract);
-                const flashLoanLiquidation = new ethers_1.ethers.Contract(config.contracts.flashLoanLiquidation, this.getAbi('flashLoanLiquidation'), signer);
-                this.flashLoanLiquidationCache.set(chainName, flashLoanLiquidation);
-                const addressesProviderAddress = await contract.ADDRESSES_PROVIDER();
-                const addressesProvider = new ethers_1.ethers.Contract(addressesProviderAddress, this.getAbi('addressesProvider'), signer);
-                const dataProviderAddress = await addressesProvider.getPoolDataProvider();
-                const dataProvider = new ethers_1.ethers.Contract(dataProviderAddress, this.getAbi('dataProvider'), signer);
-                this.dataProviderCache.set(chainName, dataProvider);
-                const priceOracleAddress = await addressesProvider.getPriceOracle();
-                const priceOracle = new ethers_1.ethers.Contract(priceOracleAddress, this.getAbi('priceOracle'), signer);
-                this.priceOracleCache.set(chainName, priceOracle);
-                this.logger.log(`[${chainName}] Initialized provider, signer, contract, dataProvider and priceOracle`);
-            }
-            catch (error) {
-                this.logger.error(`[${chainName}] Failed to initialize resources: ${error.message}`);
-            }
-        }
+    async getSigner(chainName) {
+        const provider = await this.chainService.getProvider(chainName);
+        return new ethers_1.ethers.Wallet(this.PRIVATE_KEY, provider);
     }
     getAbi(name) {
         const abi = this.abiCache.get(name);
@@ -110,33 +83,31 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         }
         return abi;
     }
-    getAaveV3Pool(chainName) {
-        const contract = this.aaveV3PoolCache.get(chainName);
-        if (!contract) {
-            throw new Error(`Contract not initialized for chain ${chainName}`);
-        }
+    async getMulticall(chainName) {
+        const signer = await this.getSigner(chainName);
+        const multicallContract = new ethers_1.ethers.Contract('0xcA11bde05977b3631167028862bE2a173976CA11', this.getAbi('multicall'), signer);
+        return multicallContract;
+    }
+    async getAaveV3Pool(chainName) {
+        const signer = await this.getSigner(chainName);
+        const config = this.chainService.getChainConfig(chainName);
+        const contract = new ethers_1.ethers.Contract(config.contracts.aavev3Pool, this.getAbi('aaveV3Pool'), signer);
         return contract;
     }
-    getDataProvider(chainName) {
-        const dataProvider = this.dataProviderCache.get(chainName);
-        if (!dataProvider) {
-            throw new Error(`DataProvider not initialized for chain ${chainName}`);
-        }
+    async getFlashLoanLiquidation(chainName) {
+        const signer = await this.getSigner(chainName);
+        const config = this.chainService.getChainConfig(chainName);
+        const flashLoanLiquidation = new ethers_1.ethers.Contract(config.contracts.flashLoanLiquidation, this.getAbi('flashLoanLiquidation'), signer);
+        return flashLoanLiquidation;
+    }
+    async getDataProvider(chainName) {
+        const signer = await this.getSigner(chainName);
+        const aaveV3Pool = await this.getAaveV3Pool(chainName);
+        const addressesProviderAddress = await aaveV3Pool.ADDRESSES_PROVIDER();
+        const addressesProvider = new ethers_1.ethers.Contract(addressesProviderAddress, this.getAbi('addressesProvider'), signer);
+        const dataProviderAddress = await addressesProvider.getPoolDataProvider();
+        const dataProvider = new ethers_1.ethers.Contract(dataProviderAddress, this.getAbi('dataProvider'), signer);
         return dataProvider;
-    }
-    getFlashLoanLiquidation(chainName) {
-        const contract = this.flashLoanLiquidationCache.get(chainName);
-        if (!contract) {
-            throw new Error(`FlashLoanLiquidation contract not initialized for chain ${chainName}`);
-        }
-        return contract;
-    }
-    getMulticall(chainName) {
-        const multicall = this.multicallCache.get(chainName);
-        if (!multicall) {
-            throw new Error(`Multicall contract not initialized for chain ${chainName}`);
-        }
-        return multicall;
     }
     async loadTokenCache() {
         try {
@@ -159,7 +130,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
     }
     async getTokenInfo(chainName, address, provider) {
         const normalizedAddress = address.toLowerCase();
-        const providerToUse = provider || this.providerCache.get(chainName);
+        const providerToUse = provider || await this.chainService.getProvider(chainName);
         if (!providerToUse) {
             throw new Error(`Provider not initialized for chain ${chainName}`);
         }
@@ -236,7 +207,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             var _a;
             try {
                 const tokenInfo = await this.getTokenInfo(chainName, reserve, provider);
-                this.logger.log(`[${chainName}] Borrow event detected:`);
+                this.logger.log(`[${chainName}] 🩷 Borrow event detected:`);
                 this.logger.log(`- Reserve: ${reserve} (${tokenInfo.symbol})`);
                 this.logger.log(`- User: ${user}`);
                 this.logger.log(`- OnBehalfOf: ${onBehalfOf}`);
@@ -271,7 +242,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                     this.getTokenInfo(chainName, collateralAsset, provider),
                     this.getTokenInfo(chainName, debtAsset, provider),
                 ]);
-                this.logger.log(`[${chainName}] LiquidationCall event detected:`);
+                this.logger.log(`[${chainName}] 😄 LiquidationCall event detected:`);
                 this.logger.log(`- Collateral Asset: ${collateralAsset} (${collateralInfo.symbol})`);
                 this.logger.log(`- Debt Asset: ${debtAsset} (${debtInfo.symbol})`);
                 this.logger.log(`- User: ${user}`);
@@ -301,22 +272,10 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         contract.on('Borrow', this.createBorrowEventHandler(chainName, provider));
         contract.on('LiquidationCall', this.createLiquidationCallEventHandler(chainName, provider));
     }
-    async reinitializeEventListeners(chainName) {
-        try {
-            const provider = await this.chainService.getProvider(chainName);
-            const contract = this.getAaveV3Pool(chainName);
-            this.logger.log(`[${chainName}] Reinitializing event listeners...`);
-            await this.setupEventListeners(chainName, contract, provider);
-            this.logger.log(`[${chainName}] Event listeners reinitialized successfully`);
-        }
-        catch (error) {
-            this.logger.error(`[${chainName}] Failed to reinitialize event listeners: ${error.message}`);
-        }
-    }
     async startListening() {
         const chains = this.chainService.getActiveChains();
         this.logger.log(`Starting to listen on chains: ${chains.join(', ')}`);
-        for (const chainName of chains) {
+        await Promise.all(chains.map(async (chainName) => {
             try {
                 const provider = await this.chainService.getProvider(chainName);
                 const config = this.chainService.getChainConfig(chainName);
@@ -325,30 +284,22 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                 const code = await provider.getCode(config.contracts.aavev3Pool);
                 if (code === '0x') {
                     this.logger.error(`[${chainName}] No contract code found at address ${config.contracts.aavev3Pool}`);
-                    continue;
+                    return;
                 }
                 const code2 = await provider.getCode(config.contracts.flashLoanLiquidation);
                 if (code2 === '0x') {
                     this.logger.error(`[${chainName}] No contract code found at address ${config.contracts.flashLoanLiquidation}`);
-                    continue;
+                    return;
                 }
                 this.logger.log(`[${chainName}] Contract code found at ${config.contracts.aavev3Pool}, ${config.contracts.flashLoanLiquidation}`);
-                const contract = this.getAaveV3Pool(chainName);
-                const ws = provider.websocket;
-                ws.on('close', async () => {
-                    this.logger.warn(`[${chainName}] WebSocket connection closed, will attempt to reinitialize event listeners after reconnection...`);
-                });
-                ws.on('open', async () => {
-                    this.logger.log(`[${chainName}] WebSocket connection reopened, reinitializing event listeners...`);
-                    await this.reinitializeEventListeners(chainName);
-                });
-                await this.setupEventListeners(chainName, contract, provider);
+                const aaveV3Pool = await this.getAaveV3Pool(chainName);
+                await this.setupEventListeners(chainName, aaveV3Pool, provider);
                 this.logger.log(`[${chainName}] Successfully set up event listeners and verified contract connection`);
             }
             catch (error) {
                 this.logger.error(`Failed to set up event listeners for ${chainName}: ${error.message}`);
             }
-        }
+        }));
     }
     startHealthFactorChecker() {
         let isChecking = false;
@@ -358,9 +309,18 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             }
             isChecking = true;
             try {
-                for (const chainName of this.activeLoans.keys()) {
-                    await this.checkHealthFactorsBatch(chainName);
-                }
+                const chains = Array.from(this.activeLoans.keys());
+                await Promise.all(chains.map(async (chainName) => {
+                    try {
+                        await Promise.race([
+                            this.checkHealthFactorsBatch(chainName),
+                            new Promise((_, reject) => setTimeout(() => reject(new Error(`Chain ${chainName} check timeout after ${this.CHAIN_CHECK_TIMEOUT}ms`)), this.CHAIN_CHECK_TIMEOUT))
+                        ]);
+                    }
+                    catch (error) {
+                        this.logger.error(`[${chainName}] Error in chain check: ${error.message}`);
+                    }
+                }));
             }
             catch (error) {
                 this.logger.error(`Error in health factor checker: ${error.message}`);
@@ -399,7 +359,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             for (let i = 0; i < usersToCheck.length; i += BATCH_SIZE) {
                 const batchUsers = usersToCheck.slice(i, i + BATCH_SIZE);
                 this.logger.log(`[${chainName}] Checking health factors for batch ${i / BATCH_SIZE + 1}/${Math.ceil(usersToCheck.length / BATCH_SIZE)} (${batchUsers.length}/${activeLoansMap.size} users)...`);
-                const aaveV3Pool = this.getAaveV3Pool(chainName);
+                const aaveV3Pool = await this.getAaveV3Pool(chainName);
                 const accountDataMap = await this.getUserAccountDataBatch(chainName, aaveV3Pool, batchUsers);
                 for (const user of batchUsers) {
                     const accountData = accountDataMap.get(user);
@@ -445,12 +405,9 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             this.logger.error(`[${chainName}] Error checking health factors batch: ${error.message}`);
         }
     }
-    safeStringify(obj) {
-        return JSON.stringify(obj, (key, value) => typeof value === 'bigint' ? value.toString() : value);
-    }
     async getUserAccountDataBatch(chainName, contract, users) {
         try {
-            const multicallContract = this.getMulticall(chainName);
+            const multicallContract = await this.getMulticall(chainName);
             const calls = users.map(user => ({
                 target: contract.target,
                 callData: contract.interface.encodeFunctionData('getUserAccountData', [user])
@@ -500,7 +457,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
     }
     async executeLiquidation(chainName, user, healthFactor, aaveV3Pool) {
         try {
-            const multicall = this.getMulticall(chainName);
+            const multicall = await this.getMulticall(chainName);
             const calls = [
                 {
                     target: aaveV3Pool.target, callData: aaveV3Pool.interface.encodeFunctionData('getUserConfiguration', [user])
@@ -512,7 +469,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             const [, returnData] = await multicall.aggregate.staticCall(calls);
             const [userConfig,] = aaveV3Pool.interface.decodeFunctionResult('getUserConfiguration', returnData[0]);
             const [reservesList,] = aaveV3Pool.interface.decodeFunctionResult('getReservesList', returnData[1]);
-            const dataProvider = this.getDataProvider(chainName);
+            const dataProvider = await this.getDataProvider(chainName);
             const reserveCalls = [];
             const borrowingAssets = [];
             const collateralAssets = [];
@@ -582,7 +539,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             this.logger.log(`- Health Factor: ${healthFactor}`);
             this.logger.log(`- Collateral Asset: ${maxCollateralAsset} (${maxCollateralAmount})`);
             this.logger.log(`- Debt Asset: ${maxDebtAsset} (${maxDebtAmount})`);
-            const flashLoanLiquidation = this.getFlashLoanLiquidation(chainName);
+            const flashLoanLiquidation = await this.getFlashLoanLiquidation(chainName);
             try {
                 const gasPrice = await flashLoanLiquidation.runner.provider.getFeeData();
                 const maxFeePerGas = gasPrice.maxFeePerGas ? gasPrice.maxFeePerGas * BigInt(15) / BigInt(10) : undefined;
@@ -600,16 +557,6 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         }
         catch (error) {
             this.logger.error(`[${chainName}] Error executing liquidation for user ${user}: ${error.message}`);
-        }
-    }
-    async getTokenPrice(chainName, tokenAddress) {
-        const priceOracle = this.priceOracleCache.get(chainName);
-        const price = await priceOracle.getAssetPrice(tokenAddress);
-        return Number(price) / 1e8;
-    }
-    async onModuleDestroy() {
-        if (this.checkInterval) {
-            clearInterval(this.checkInterval);
         }
     }
 };

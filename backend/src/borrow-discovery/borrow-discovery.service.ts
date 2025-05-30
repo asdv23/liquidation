@@ -37,16 +37,10 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
     private readonly HEALTH_FACTOR_THRESHOLD = 1.1; // 健康阈值
     private readonly MIN_WAIT_TIME: number; // 最小等待时间（毫秒）
     private readonly MAX_WAIT_TIME: number; // 最大等待时间（毫秒）
+    private readonly CHAIN_CHECK_TIMEOUT: number; // 链检查超时时间（毫秒）
     private readonly PRIVATE_KEY: string; // EOA 私钥
     private checkInterval: NodeJS.Timeout;
-    private aaveV3PoolCache: Map<string, ethers.Contract> = new Map(); // 合约缓存
-    private providerCache: Map<string, ethers.Provider> = new Map(); // Provider 缓存
-    private signerCache: Map<string, ethers.Signer> = new Map(); // Signer 缓存
-    private dataProviderCache: Map<string, ethers.Contract> = new Map(); // DataProvider 缓存
-    private priceOracleCache: Map<string, ethers.Contract> = new Map(); // PriceOracle 缓存
-    private flashLoanLiquidationCache: Map<string, ethers.Contract> = new Map(); // FlashLoanLiquidation 合约缓存
     private abiCache: Map<string, any> = new Map(); // 新增：ABI 缓存
-    private multicallCache: Map<string, ethers.Contract> = new Map(); // 新增：multicall 合约缓存
 
     constructor(
         private readonly chainService: ChainService,
@@ -56,7 +50,25 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         // 从环境变量读取配置，默认值：最小1s，最大4小时
         this.MIN_WAIT_TIME = this.configService.get<number>('MIN_CHECK_INTERVAL', 1000);
         this.MAX_WAIT_TIME = this.configService.get<number>('MAX_CHECK_INTERVAL', 4 * 60 * 60 * 1000);
+        this.CHAIN_CHECK_TIMEOUT = this.configService.get<number>('CHAIN_CHECK_TIMEOUT', 5000); // 默认5秒
         this.PRIVATE_KEY = this.configService.get<string>('PRIVATE_KEY');
+    }
+
+    async onModuleInit() {
+        this.logger.log('BorrowDiscoveryService initializing...');
+        await this.initializeAbis(); // 新增：初始化 ABI
+        await this.loadTokenCache();
+        await this.loadActiveLoans();
+        await this.startListening();
+        this.startHealthFactorChecker();
+    }
+
+    async onModuleDestroy() {
+        this.logger.log('BorrowDiscoveryService destroying...');
+        if (this.checkInterval) {
+            this.logger.log('Clearing check interval');
+            clearInterval(this.checkInterval);
+        }
     }
 
     private async initializeAbis() {
@@ -83,85 +95,12 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         }
     }
 
-    async onModuleInit() {
-        this.logger.log('BorrowDiscoveryService initializing...');
-        await this.initializeAbis(); // 新增：初始化 ABI
-        await this.initializeResources();
-        await this.loadTokenCache();
-        await this.loadActiveLoans();
-        await this.startListening();
-        this.startHealthFactorChecker();
-    }
+    private async getSigner(chainName: string): Promise<ethers.Signer> {
+        // 初始化 provider
+        const provider = await this.chainService.getProvider(chainName);
 
-    private async initializeResources() {
-        const chains = this.chainService.getActiveChains();
-        for (const chainName of chains) {
-            try {
-                // 初始化 provider
-                const provider = await this.chainService.getProvider(chainName);
-                this.providerCache.set(chainName, provider);
-
-                // 初始化 signer
-                const signer = new ethers.Wallet(this.PRIVATE_KEY, provider);
-                this.signerCache.set(chainName, signer);
-                this.logger.log(`[${chainName}] Initialized signer: ${signer.address}`);
-
-                // 初始化 multicall 合约
-                const multicallContract = new ethers.Contract(
-                    '0xcA11bde05977b3631167028862bE2a173976CA11',
-                    this.getAbi('multicall'),
-                    signer
-                );
-                this.multicallCache.set(chainName, multicallContract);
-
-                // 初始化合约
-                const config = this.chainService.getChainConfig(chainName);
-                const contract = new ethers.Contract(
-                    config.contracts.aavev3Pool,
-                    this.getAbi('aaveV3Pool'),
-                    signer
-                );
-                this.aaveV3PoolCache.set(chainName, contract);
-
-                // 初始化 FlashLoanLiquidation 合约
-                const flashLoanLiquidation = new ethers.Contract(
-                    config.contracts.flashLoanLiquidation,
-                    this.getAbi('flashLoanLiquidation'),
-                    signer
-                );
-                this.flashLoanLiquidationCache.set(chainName, flashLoanLiquidation);
-
-                // 初始化 DataProvider
-                const addressesProviderAddress = await contract.ADDRESSES_PROVIDER();
-                const addressesProvider = new ethers.Contract(
-                    addressesProviderAddress,
-                    this.getAbi('addressesProvider'),
-                    signer
-                );
-
-                // dataProvider
-                const dataProviderAddress = await addressesProvider.getPoolDataProvider();
-                const dataProvider = new ethers.Contract(
-                    dataProviderAddress,
-                    this.getAbi('dataProvider'),
-                    signer
-                );
-                this.dataProviderCache.set(chainName, dataProvider);
-
-                // priceOracle
-                const priceOracleAddress = await addressesProvider.getPriceOracle();
-                const priceOracle = new ethers.Contract(
-                    priceOracleAddress,
-                    this.getAbi('priceOracle'),
-                    signer
-                );
-                this.priceOracleCache.set(chainName, priceOracle);
-
-                this.logger.log(`[${chainName}] Initialized provider, signer, contract, dataProvider and priceOracle`);
-            } catch (error) {
-                this.logger.error(`[${chainName}] Failed to initialize resources: ${error.message}`);
-            }
-        }
+        // 初始化 signer
+        return new ethers.Wallet(this.PRIVATE_KEY, provider);
     }
 
     private getAbi(name: string): any {
@@ -172,37 +111,58 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         return abi;
     }
 
-    private getAaveV3Pool(chainName: string): ethers.Contract {
-        const contract = this.aaveV3PoolCache.get(chainName);
-        if (!contract) {
-            throw new Error(`Contract not initialized for chain ${chainName}`);
-        }
+    private async getMulticall(chainName: string): Promise<ethers.Contract> {
+        const signer = await this.getSigner(chainName);
+        const multicallContract = new ethers.Contract(
+            '0xcA11bde05977b3631167028862bE2a173976CA11',
+            this.getAbi('multicall'),
+            signer
+        );
+        return multicallContract;
+    }
+
+    private async getAaveV3Pool(chainName: string): Promise<ethers.Contract> {
+        const signer = await this.getSigner(chainName);
+        const config = this.chainService.getChainConfig(chainName);
+        const contract = new ethers.Contract(
+            config.contracts.aavev3Pool,
+            this.getAbi('aaveV3Pool'),
+            signer
+        );
         return contract;
     }
 
-    private getDataProvider(chainName: string): ethers.Contract {
-        const dataProvider = this.dataProviderCache.get(chainName);
-        if (!dataProvider) {
-            throw new Error(`DataProvider not initialized for chain ${chainName}`);
-        }
+    private async getFlashLoanLiquidation(chainName: string): Promise<ethers.Contract> {
+        const signer = await this.getSigner(chainName);
+        const config = this.chainService.getChainConfig(chainName);
+        const flashLoanLiquidation = new ethers.Contract(
+            config.contracts.flashLoanLiquidation,
+            this.getAbi('flashLoanLiquidation'),
+            signer
+        );
+        return flashLoanLiquidation;
+    }
+
+    private async getDataProvider(chainName: string): Promise<ethers.Contract> {
+        const signer = await this.getSigner(chainName);
+        // addressesProvider
+        const aaveV3Pool = await this.getAaveV3Pool(chainName);
+        const addressesProviderAddress = await aaveV3Pool.ADDRESSES_PROVIDER();
+        const addressesProvider = new ethers.Contract(
+            addressesProviderAddress,
+            this.getAbi('addressesProvider'),
+            signer
+        );
+        // dataProvider
+        const dataProviderAddress = await addressesProvider.getPoolDataProvider();
+        const dataProvider = new ethers.Contract(
+            dataProviderAddress,
+            this.getAbi('dataProvider'),
+            signer
+        );
         return dataProvider;
     }
 
-    private getFlashLoanLiquidation(chainName: string): ethers.Contract {
-        const contract = this.flashLoanLiquidationCache.get(chainName);
-        if (!contract) {
-            throw new Error(`FlashLoanLiquidation contract not initialized for chain ${chainName}`);
-        }
-        return contract;
-    }
-
-    private getMulticall(chainName: string): ethers.Contract {
-        const multicall = this.multicallCache.get(chainName);
-        if (!multicall) {
-            throw new Error(`Multicall contract not initialized for chain ${chainName}`);
-        }
-        return multicall;
-    }
 
     private async loadTokenCache() {
         try {
@@ -227,7 +187,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         const normalizedAddress = address.toLowerCase();
 
         // 如果没有传入 provider，则从缓存获取
-        const providerToUse = provider || this.providerCache.get(chainName);
+        const providerToUse = provider || await this.chainService.getProvider(chainName);
         if (!providerToUse) {
             throw new Error(`Provider not initialized for chain ${chainName}`);
         }
@@ -321,7 +281,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             interestRateMode: number, borrowRate: bigint, referralCode: number, event: any) => {
             try {
                 const tokenInfo = await this.getTokenInfo(chainName, reserve, provider);
-                this.logger.log(`[${chainName}] Borrow event detected:`);
+                this.logger.log(`[${chainName}] 🩷 Borrow event detected:`);
                 this.logger.log(`- Reserve: ${reserve} (${tokenInfo.symbol})`);
                 this.logger.log(`- User: ${user}`);
                 this.logger.log(`- OnBehalfOf: ${onBehalfOf}`);
@@ -359,7 +319,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                     this.getTokenInfo(chainName, collateralAsset, provider),
                     this.getTokenInfo(chainName, debtAsset, provider),
                 ]);
-                this.logger.log(`[${chainName}] LiquidationCall event detected:`);
+                this.logger.log(`[${chainName}] 😄 LiquidationCall event detected:`);
                 this.logger.log(`- Collateral Asset: ${collateralAsset} (${collateralInfo.symbol})`);
                 this.logger.log(`- Debt Asset: ${debtAsset} (${debtInfo.symbol})`);
                 this.logger.log(`- User: ${user}`);
@@ -398,24 +358,12 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         contract.on('LiquidationCall', this.createLiquidationCallEventHandler(chainName, provider));
     }
 
-    private async reinitializeEventListeners(chainName: string) {
-        try {
-            const provider = await this.chainService.getProvider(chainName);
-            const contract = this.getAaveV3Pool(chainName);
-
-            this.logger.log(`[${chainName}] Reinitializing event listeners...`);
-            await this.setupEventListeners(chainName, contract, provider);
-            this.logger.log(`[${chainName}] Event listeners reinitialized successfully`);
-        } catch (error) {
-            this.logger.error(`[${chainName}] Failed to reinitialize event listeners: ${error.message}`);
-        }
-    }
-
     private async startListening() {
         const chains = this.chainService.getActiveChains();
         this.logger.log(`Starting to listen on chains: ${chains.join(', ')}`);
 
-        for (const chainName of chains) {
+        // 并发执行所有链的初始化
+        await Promise.all(chains.map(async (chainName) => {
             try {
                 const provider = await this.chainService.getProvider(chainName);
                 const config = this.chainService.getChainConfig(chainName);
@@ -428,36 +376,25 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 const code = await provider.getCode(config.contracts.aavev3Pool);
                 if (code === '0x') {
                     this.logger.error(`[${chainName}] No contract code found at address ${config.contracts.aavev3Pool}`);
-                    continue;
+                    return;
                 }
                 const code2 = await provider.getCode(config.contracts.flashLoanLiquidation);
                 if (code2 === '0x') {
                     this.logger.error(`[${chainName}] No contract code found at address ${config.contracts.flashLoanLiquidation}`);
-                    continue;
+                    return;
                 }
                 this.logger.log(`[${chainName}] Contract code found at ${config.contracts.aavev3Pool}, ${config.contracts.flashLoanLiquidation}`);
 
-                const contract = this.getAaveV3Pool(chainName);
-
-                // 设置WebSocket重连后的回调
-                const ws = provider.websocket as WebSocket;
-                ws.on('close', async () => {
-                    this.logger.warn(`[${chainName}] WebSocket connection closed, will attempt to reinitialize event listeners after reconnection...`);
-                });
-
-                ws.on('open', async () => {
-                    this.logger.log(`[${chainName}] WebSocket connection reopened, reinitializing event listeners...`);
-                    await this.reinitializeEventListeners(chainName);
-                });
+                const aaveV3Pool = await this.getAaveV3Pool(chainName);
 
                 // 初始化事件监听器
-                await this.setupEventListeners(chainName, contract, provider);
+                await this.setupEventListeners(chainName, aaveV3Pool, provider);
 
                 this.logger.log(`[${chainName}] Successfully set up event listeners and verified contract connection`);
             } catch (error) {
                 this.logger.error(`Failed to set up event listeners for ${chainName}: ${error.message}`);
             }
-        }
+        }));
     }
 
     private startHealthFactorChecker() {
@@ -470,10 +407,21 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
 
             isChecking = true;
             try {
-                // 从内存中获取所有需要检查的贷款
-                for (const chainName of this.activeLoans.keys()) {
-                    await this.checkHealthFactorsBatch(chainName);
-                }
+                // 并发执行所有链的检查，添加超时控制
+                const chains = Array.from(this.activeLoans.keys());
+                await Promise.all(chains.map(async (chainName) => {
+                    try {
+                        await Promise.race([
+                            this.checkHealthFactorsBatch(chainName),
+                            new Promise((_, reject) =>
+                                setTimeout(() => reject(new Error(`Chain ${chainName} check timeout after ${this.CHAIN_CHECK_TIMEOUT}ms`)),
+                                    this.CHAIN_CHECK_TIMEOUT)
+                            )
+                        ]);
+                    } catch (error) {
+                        this.logger.error(`[${chainName}] Error in chain check: ${error.message}`);
+                    }
+                }));
             } catch (error) {
                 this.logger.error(`Error in health factor checker: ${error.message}`);
             } finally {
@@ -521,7 +469,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 const batchUsers = usersToCheck.slice(i, i + BATCH_SIZE);
                 this.logger.log(`[${chainName}] Checking health factors for batch ${i / BATCH_SIZE + 1}/${Math.ceil(usersToCheck.length / BATCH_SIZE)} (${batchUsers.length}/${activeLoansMap.size} users)...`);
 
-                const aaveV3Pool = this.getAaveV3Pool(chainName);
+                const aaveV3Pool = await this.getAaveV3Pool(chainName);
                 const accountDataMap = await this.getUserAccountDataBatch(chainName, aaveV3Pool, batchUsers);
 
                 for (const user of batchUsers) {
@@ -587,15 +535,9 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         }
     }
 
-    private safeStringify(obj: any): string {
-        return JSON.stringify(obj, (key, value) =>
-            typeof value === 'bigint' ? value.toString() : value
-        );
-    }
-
     private async getUserAccountDataBatch(chainName: string, contract: ethers.Contract, users: string[]): Promise<Map<string, UserAccountData>> {
         try {
-            const multicallContract = this.getMulticall(chainName);
+            const multicallContract = await this.getMulticall(chainName);
 
             // 准备调用数据
             const calls = users.map(user => ({
@@ -671,7 +613,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
     private async executeLiquidation(chainName: string, user: string, healthFactor: number, aaveV3Pool: ethers.Contract) {
         try {
             // 1. 使用 multicall 批量获取用户配置和储备资产列表
-            const multicall = this.getMulticall(chainName);
+            const multicall = await this.getMulticall(chainName);
             const calls = [
                 {
                     target: aaveV3Pool.target, callData: aaveV3Pool.interface.encodeFunctionData('getUserConfiguration', [user])
@@ -686,7 +628,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             const [reservesList,] = aaveV3Pool.interface.decodeFunctionResult('getReservesList', returnData[1]);
 
             // 2. 使用 multicall 批量查询所有借贷资产的债务数据
-            const dataProvider = this.getDataProvider(chainName);
+            const dataProvider = await this.getDataProvider(chainName);
 
             // 准备 multicall 调用数据
             const reserveCalls = [];
@@ -782,7 +724,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             this.logger.log(`- Debt Asset: ${maxDebtAsset} (${maxDebtAmount})`);
 
             // 4. 执行闪电贷清算
-            const flashLoanLiquidation = this.getFlashLoanLiquidation(chainName);
+            const flashLoanLiquidation = await this.getFlashLoanLiquidation(chainName);
 
             try {
                 // 获取当前 gas 价格并提高 50%
@@ -806,19 +748,6 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             }
         } catch (error) {
             this.logger.error(`[${chainName}] Error executing liquidation for user ${user}: ${error.message}`);
-        }
-    }
-
-    private async getTokenPrice(chainName: string, tokenAddress: string): Promise<number> {
-        const priceOracle = this.priceOracleCache.get(chainName);
-        const price = await priceOracle.getAssetPrice(tokenAddress);
-        return Number(price) / 1e8;
-    }
-
-    // 在服务销毁时清理定时器
-    async onModuleDestroy() {
-        if (this.checkInterval) {
-            clearInterval(this.checkInterval);
         }
     }
 } 
