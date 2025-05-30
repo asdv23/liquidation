@@ -187,5 +187,12 @@ forge script --broadcast \
 --sig 'run()' \
 script/deployParameters/DeployARB.s.sol:DeployARB
 
+<!-- avax -->
+forge script --broadcast \
+--rpc-url $AVAX_RPC_URL \
+--private-key $PRIVATE_KEY \
+--sig 'run()' \
+script/deployParameters/DeployAVAX.s.sol:DeployAVAX
+
 ```
 

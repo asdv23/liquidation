@@ -14,8 +14,11 @@ const prisma = new PrismaClient();
 // const chainName = 'op';
 // const endpoint = 'https://gateway.thegraph.com/api/subgraphs/id/3RWFxWNstn4nP3dXiDfKi9GgBoHx7xzc7APkXs1MLEgi';
 // arb
-const chainName = 'arb';
-const endpoint = 'https://gateway.thegraph.com/api/subgraphs/id/4xyasjQeREe7PxnF6wVdobZvCw5mhoHZq3T7guRpuNPf';
+// const chainName = 'arb';
+// const endpoint = 'https://gateway.thegraph.com/api/subgraphs/id/4xyasjQeREe7PxnF6wVdobZvCw5mhoHZq3T7guRpuNPf';
+// avalanche
+const chainName = 'avax';
+const endpoint = 'https://gateway.thegraph.com/api/subgraphs/id/72Cez54APnySAn6h8MswzYkwaL9KjvuuKnKArnPJ8yxb';
 
 const PAGE_SIZE = 1000; // 每页查询数量
 
@@ -121,7 +124,7 @@ async function fetchAndStoreBorrows() {
             await new Promise(resolve => setTimeout(resolve, 1000));
         }
 
-        console.log(`Successfully completed! Total processed: ${totalProcessed}`);
+        console.log(`Successfully ${chainName} completed! Total processed: ${totalProcessed}`);
     } catch (error) {
         console.error('Error in main process:', error);
     } finally {
