@@ -11,8 +11,11 @@ const prisma = new PrismaClient();
 // const chainName = 'base';
 // const endpoint = 'https://gateway.thegraph.com/api/subgraphs/id/D7mapexM5ZsQckLJai2FawTKXJ7CqYGKM8PErnS3cJi9';
 // op
-const chainName = 'op';
-const endpoint = 'https://gateway.thegraph.com/api/subgraphs/id/3RWFxWNstn4nP3dXiDfKi9GgBoHx7xzc7APkXs1MLEgi';
+// const chainName = 'op';
+// const endpoint = 'https://gateway.thegraph.com/api/subgraphs/id/3RWFxWNstn4nP3dXiDfKi9GgBoHx7xzc7APkXs1MLEgi';
+// arb
+const chainName = 'arb';
+const endpoint = 'https://gateway.thegraph.com/api/subgraphs/id/4xyasjQeREe7PxnF6wVdobZvCw5mhoHZq3T7guRpuNPf';
 
 const PAGE_SIZE = 1000; // 每页查询数量
 

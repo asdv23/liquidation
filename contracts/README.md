@@ -180,5 +180,12 @@ forge script --broadcast \
 --sig 'run()' \
 script/deployParameters/DeployOP.s.sol:DeployOP
 
+<!-- arb -->
+forge script --broadcast \
+--rpc-url $ARB_RPC_URL \
+--private-key $PRIVATE_KEY \
+--sig 'run()' \
+script/deployParameters/DeployARB.s.sol:DeployARB
+
 ```
 

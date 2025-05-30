@@ -301,11 +301,10 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                     const activeLoansMap = this.activeLoans.get(chainName);
 
                     // 将数据库中的活跃贷款加载到内存，设置 nextCheckTime 为当前时间
-                    const now = new Date();
                     for (const loan of activeLoans) {
                         activeLoansMap.set(loan.user, {
-                            nextCheckTime: now, // 设置为当前时间，确保立即检查
-                            healthFactor: 1.0 // 假设健康因子为1.0，需要根据实际情况更新
+                            nextCheckTime: loan.nextCheckTime,
+                            healthFactor: loan.healthFactor
                         });
                     }
 
@@ -570,9 +569,17 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
 
                     // 更新内存中的健康因子和下次检查时间
                     activeLoansMap.set(user, {
-                        nextCheckTime: new Date(Date.now() + waitTime),
+                        nextCheckTime: nextCheckTime,
                         healthFactor: healthFactor
                     });
+
+                    // 更新数据库中的健康因子和下次检查时间
+                    await this.databaseService.updateLoanHealthFactor(
+                        chainName,
+                        user,
+                        healthFactor,
+                        nextCheckTime
+                    );
                 }
             }
         } catch (error) {

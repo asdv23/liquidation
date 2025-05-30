@@ -241,4 +241,25 @@ export class DatabaseService implements OnModuleInit {
             throw error;
         }
     }
+
+    async updateLoanHealthFactor(chainName: string, user: string, healthFactor: number, nextCheckTime: Date) {
+        try {
+            await this.prisma.loan.update({
+                where: {
+                    chainName_user: {
+                        chainName,
+                        user: user.toLowerCase(),
+                    },
+                },
+                data: {
+                    healthFactor,
+                    nextCheckTime,
+                    updatedAt: new Date(),
+                },
+            });
+        } catch (error) {
+            this.logger.error(`Error updating loan health factor: ${error.message}`);
+            throw error;
+        }
+    }
 } 

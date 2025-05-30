@@ -20,6 +20,8 @@ export declare class DatabaseService implements OnModuleInit {
         liquidationTime: Date | null;
         liquidator: string | null;
         liquidationDelay: number | null;
+        nextCheckTime: Date | null;
+        healthFactor: number | null;
     }>;
     recordLiquidation(chainName: string, user: string, liquidator: string, txHash: string): Promise<{
         id: number;
@@ -33,6 +35,8 @@ export declare class DatabaseService implements OnModuleInit {
         liquidationTime: Date | null;
         liquidator: string | null;
         liquidationDelay: number | null;
+        nextCheckTime: Date | null;
+        healthFactor: number | null;
     }>;
     getActiveLoans(chainName?: string): Promise<{
         id: number;
@@ -46,6 +50,8 @@ export declare class DatabaseService implements OnModuleInit {
         liquidationTime: Date | null;
         liquidator: string | null;
         liquidationDelay: number | null;
+        nextCheckTime: Date | null;
+        healthFactor: number | null;
     }[]>;
     deactivateLoan(chainName: string, user: string): Promise<{
         id: number;
@@ -59,6 +65,8 @@ export declare class DatabaseService implements OnModuleInit {
         liquidationTime: Date | null;
         liquidator: string | null;
         liquidationDelay: number | null;
+        nextCheckTime: Date | null;
+        healthFactor: number | null;
     }>;
     getLoansToCheck(): Promise<{
         id: number;
@@ -72,6 +80,8 @@ export declare class DatabaseService implements OnModuleInit {
         liquidationTime: Date | null;
         liquidator: string | null;
         liquidationDelay: number | null;
+        nextCheckTime: Date | null;
+        healthFactor: number | null;
     }[]>;
     getToken(chainName: string, address: string): Promise<{
         symbol: string;
@@ -101,4 +111,5 @@ export declare class DatabaseService implements OnModuleInit {
         decimals: number;
     }[]>;
     createOrUpdateLoan(chainName: string, user: string): Promise<void>;
+    updateLoanHealthFactor(chainName: string, user: string, healthFactor: number, nextCheckTime: Date): Promise<void>;
 }

@@ -217,11 +217,10 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                         this.activeLoans.set(chainName, new Map());
                     }
                     const activeLoansMap = this.activeLoans.get(chainName);
-                    const now = new Date();
                     for (const loan of activeLoans) {
                         activeLoansMap.set(loan.user, {
-                            nextCheckTime: now,
-                            healthFactor: 1.0
+                            nextCheckTime: loan.nextCheckTime,
+                            healthFactor: loan.healthFactor
                         });
                     }
                     this.logger.log(`[${chainName}] Loaded ${activeLoansMap.size} active loans into memory, will check immediately`);
@@ -435,9 +434,10 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                     const formattedDate = this.formatDate(nextCheckTime);
                     this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate}), healthFactor: ${healthFactor}`);
                     activeLoansMap.set(user, {
-                        nextCheckTime: new Date(Date.now() + waitTime),
+                        nextCheckTime: nextCheckTime,
                         healthFactor: healthFactor
                     });
+                    await this.databaseService.updateLoanHealthFactor(chainName, user, healthFactor, nextCheckTime);
                 }
             }
         }

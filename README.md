@@ -688,3 +688,9 @@ MIT License
 - 项目维护者：[维护者名称]
 - 邮箱：[邮箱地址]
 - Telegram：[Telegram 链接]
+
+# Add a new chain
+1. DeployXXX.s.sol
+2. DeployContracts
+3. Update .env
+4. testTheGraph.js

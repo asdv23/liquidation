@@ -234,6 +234,27 @@ let DatabaseService = DatabaseService_1 = class DatabaseService {
             throw error;
         }
     }
+    async updateLoanHealthFactor(chainName, user, healthFactor, nextCheckTime) {
+        try {
+            await this.prisma.loan.update({
+                where: {
+                    chainName_user: {
+                        chainName,
+                        user: user.toLowerCase(),
+                    },
+                },
+                data: {
+                    healthFactor,
+                    nextCheckTime,
+                    updatedAt: new Date(),
+                },
+            });
+        }
+        catch (error) {
+            this.logger.error(`Error updating loan health factor: ${error.message}`);
+            throw error;
+        }
+    }
 };
 exports.DatabaseService = DatabaseService;
 exports.DatabaseService = DatabaseService = DatabaseService_1 = __decorate([
