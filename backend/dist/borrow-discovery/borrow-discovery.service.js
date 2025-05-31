@@ -27,6 +27,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         this.activeLoans = new Map();
         this.tokenCache = new Map();
         this.lastLiquidationAttempt = new Map();
+        this.SAME_ASSET_LIQUIDATION_THRESHOLD = 1.0005;
         this.LIQUIDATION_THRESHOLD = 1.005;
         this.CRITICAL_THRESHOLD = 1.01;
         this.HEALTH_FACTOR_THRESHOLD = 1.1;
@@ -343,20 +344,25 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             if (usersToCheck.length === 0)
                 return;
             const BATCH_SIZE = 100;
+            const batches = [];
             for (let i = 0; i < usersToCheck.length; i += BATCH_SIZE) {
                 const batchUsers = usersToCheck.slice(i, i + BATCH_SIZE);
-                this.logger.log(`[${chainName}] Checking health factors for batch ${i / BATCH_SIZE + 1}/${Math.ceil(usersToCheck.length / BATCH_SIZE)} (${batchUsers.length}/${activeLoansMap.size} users)...`);
+                batches.push(batchUsers);
+            }
+            this.logger.log(`[${chainName}] Processing ${batches.length} batches concurrently...`);
+            await Promise.all(batches.map(async (batchUsers, batchIndex) => {
                 try {
+                    this.logger.log(`[${chainName}] Processing batch ${batchIndex + 1}/${batches.length} (${batchUsers.length} users)...`);
                     await Promise.race([
                         this.processBatch(chainName, batchUsers, activeLoansMap),
                         new Promise((_, reject) => setTimeout(() => reject(new Error(`Batch check timeout after ${this.BATCH_CHECK_TIMEOUT}ms`)), this.BATCH_CHECK_TIMEOUT))
                     ]);
                 }
                 catch (error) {
-                    this.logger.error(`[${chainName}] Error processing batch: ${error.message}`);
-                    continue;
+                    this.logger.error(`[${chainName}] Error processing batch ${batchIndex + 1}: ${error.message}`);
                 }
-            }
+            }));
+            this.logger.log(`[${chainName}] Completed processing all ${batches.length} batches`);
         }
         catch (error) {
             this.logger.error(`[${chainName}] Error checking health factors batch: ${error.message}`);
@@ -512,7 +518,6 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                         const currentStableDebt = BigInt(userReserveData.currentStableDebt);
                         const currentVariableDebt = BigInt(userReserveData.currentVariableDebt);
                         const totalDebt = currentStableDebt + currentVariableDebt;
-                        this.logger.log(`- Debt Value in USD: ${currentVariableDebt} USD, Debt Amount: ${currentStableDebt}, Total Debt: ${totalDebt}`);
                         if (totalDebt > maxDebtAmount) {
                             maxDebtAmount = totalDebt;
                             maxDebtAsset = asset;
@@ -535,9 +540,13 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                 this.logger.log(`[${chainName}] No collateral assets found for user ${user}`);
                 return;
             }
+            if (maxCollateralAsset == maxDebtAsset && healthFactor > this.SAME_ASSET_LIQUIDATION_THRESHOLD) {
+                this.logger.log(`[${chainName}] Skipping liquidation for user ${user} as collateral and debt are the same asset and health factor ${healthFactor} is greater than ${this.SAME_ASSET_LIQUIDATION_THRESHOLD}, no need to liquidate`);
+                return;
+            }
             const collateralTokenInfo = await this.getTokenInfo(chainName, maxCollateralAsset);
             const debtTokenInfo = await this.getTokenInfo(chainName, maxDebtAsset);
-            this.logger.log(`[${chainName}] Executing flash loan liquidation:`);
+            this.logger.log(`[${chainName}] 💰 Executing flash loan liquidation:`);
             this.logger.log(`- User: ${user}`);
             this.logger.log(`- Health Factor: ${healthFactor}`);
             this.logger.log(`- Collateral Asset: ${maxCollateralAsset} (${(Number(maxCollateralAmount) / Number(10 ** collateralTokenInfo.decimals)).toFixed(6)} ${collateralTokenInfo.symbol})`);
@@ -545,7 +554,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             const flashLoanLiquidation = await this.getFlashLoanLiquidation(chainName);
             try {
                 const gasPrice = await flashLoanLiquidation.runner.provider.getFeeData();
-                const maxPriorityFeePerGas = gasPrice.maxPriorityFeePerGas ? gasPrice.maxPriorityFeePerGas * BigInt(15) / BigInt(10) : undefined;
+                const maxPriorityFeePerGas = gasPrice.maxPriorityFeePerGas ? gasPrice.maxPriorityFeePerGas * BigInt(15) / BigInt(10) : ethers_1.ethers.parseUnits('1', 'gwei');
                 const maxFeePerGas = gasPrice.maxFeePerGas ? gasPrice.maxFeePerGas + (maxPriorityFeePerGas || BigInt(0)) : undefined;
                 this.logger.log(`[${chainName}] gasPrice: ${gasPrice.gasPrice}, maxFeePerGas: ${maxFeePerGas}, maxPriorityFeePerGas: ${maxPriorityFeePerGas}`);
                 const tx = await flashLoanLiquidation.executeLiquidation(maxCollateralAsset, maxDebtAsset, user, {

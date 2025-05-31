@@ -1,11 +1,10 @@
 import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { ChainService } from '../chain/chain.service';
-import { ethers, MaxUint256 } from 'ethers';
+import { ethers } from 'ethers';
 import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '../database/database.service';
 import * as fs from 'fs';
 import * as path from 'path';
-import { WebSocket } from 'ws';
 
 interface UserAccountData {
     totalCollateralBase: bigint;
@@ -32,6 +31,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
     private activeLoans: Map<string, Map<string, LoanInfo>> = new Map();
     private tokenCache: Map<string, Map<string, TokenInfo>> = new Map();
     private lastLiquidationAttempt: Map<string, Map<string, { healthFactor: number, retryCount: number }>> = new Map(); // 新增：记录上次清算尝试的健康因子
+    private readonly SAME_ASSET_LIQUIDATION_THRESHOLD = 1.0005; // 相同资产清算阈值
     private readonly LIQUIDATION_THRESHOLD = 1.005; // 清算阈值
     private readonly CRITICAL_THRESHOLD = 1.01; // 危险阈值
     private readonly HEALTH_FACTOR_THRESHOLD = 1.1; // 健康阈值
@@ -448,12 +448,18 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
 
             // 将用户分批处理，每批最多 100 个
             const BATCH_SIZE = 100;
+            const batches = [];
             for (let i = 0; i < usersToCheck.length; i += BATCH_SIZE) {
                 const batchUsers = usersToCheck.slice(i, i + BATCH_SIZE);
-                this.logger.log(`[${chainName}] Checking health factors for batch ${i / BATCH_SIZE + 1}/${Math.ceil(usersToCheck.length / BATCH_SIZE)} (${batchUsers.length}/${activeLoansMap.size} users)...`);
+                batches.push(batchUsers);
+            }
 
+            this.logger.log(`[${chainName}] Processing ${batches.length} batches concurrently...`);
+
+            // 并发处理所有批次
+            await Promise.all(batches.map(async (batchUsers, batchIndex) => {
                 try {
-                    // 为每个批次添加超时控制
+                    this.logger.log(`[${chainName}] Processing batch ${batchIndex + 1}/${batches.length} (${batchUsers.length} users)...`);
                     await Promise.race([
                         this.processBatch(chainName, batchUsers, activeLoansMap),
                         new Promise((_, reject) =>
@@ -462,11 +468,11 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                         )
                     ]);
                 } catch (error) {
-                    this.logger.error(`[${chainName}] Error processing batch: ${error.message}`);
-                    // 继续处理下一批
-                    continue;
+                    this.logger.error(`[${chainName}] Error processing batch ${batchIndex + 1}: ${error.message}`);
                 }
-            }
+            }));
+
+            this.logger.log(`[${chainName}] Completed processing all ${batches.length} batches`);
         } catch (error) {
             this.logger.error(`[${chainName}] Error checking health factors batch: ${error.message}`);
         }
@@ -697,8 +703,6 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                         const currentStableDebt = BigInt(userReserveData.currentStableDebt);
                         const currentVariableDebt = BigInt(userReserveData.currentVariableDebt);
                         const totalDebt = currentStableDebt + currentVariableDebt;
-                        this.logger.log(`- Debt Value in USD: ${currentVariableDebt} USD, Debt Amount: ${currentStableDebt}, Total Debt: ${totalDebt}`);
-
                         if (totalDebt > maxDebtAmount) {
                             maxDebtAmount = totalDebt;
                             maxDebtAsset = asset;
@@ -725,9 +729,14 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 this.logger.log(`[${chainName}] No collateral assets found for user ${user}`);
                 return;
             }
+            if (maxCollateralAsset == maxDebtAsset && healthFactor > this.SAME_ASSET_LIQUIDATION_THRESHOLD) {
+                this.logger.log(`[${chainName}] Skipping liquidation for user ${user} as collateral and debt are the same asset and health factor ${healthFactor} is greater than ${this.SAME_ASSET_LIQUIDATION_THRESHOLD}, no need to liquidate`);
+                return;
+            }
+
             const collateralTokenInfo = await this.getTokenInfo(chainName, maxCollateralAsset);
             const debtTokenInfo = await this.getTokenInfo(chainName, maxDebtAsset);
-            this.logger.log(`[${chainName}] Executing flash loan liquidation:`);
+            this.logger.log(`[${chainName}] 💰 Executing flash loan liquidation:`);
             this.logger.log(`- User: ${user}`);
             this.logger.log(`- Health Factor: ${healthFactor}`);
             this.logger.log(`- Collateral Asset: ${maxCollateralAsset} (${(Number(maxCollateralAmount) / Number(10 ** collateralTokenInfo.decimals)).toFixed(6)} ${collateralTokenInfo.symbol})`);
@@ -739,7 +748,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             try {
                 // 获取当前 gas 价格并提高 50%
                 const gasPrice = await flashLoanLiquidation.runner.provider.getFeeData();
-                const maxPriorityFeePerGas = gasPrice.maxPriorityFeePerGas ? gasPrice.maxPriorityFeePerGas * BigInt(15) / BigInt(10) : undefined;
+                const maxPriorityFeePerGas = gasPrice.maxPriorityFeePerGas ? gasPrice.maxPriorityFeePerGas * BigInt(15) / BigInt(10) : ethers.parseUnits('1', 'gwei');
                 const maxFeePerGas = gasPrice.maxFeePerGas ? gasPrice.maxFeePerGas + (maxPriorityFeePerGas || BigInt(0)) : undefined;
                 this.logger.log(`[${chainName}] gasPrice: ${gasPrice.gasPrice}, maxFeePerGas: ${maxFeePerGas}, maxPriorityFeePerGas: ${maxPriorityFeePerGas}`);
 
