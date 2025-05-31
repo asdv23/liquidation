@@ -5,21 +5,32 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
     else for (var i = decorators.length - 1; i >= 0; i--) if (d = decorators[i]) r = (c < 3 ? d(r) : c > 3 ? d(target, key, r) : d(target, key)) || r;
     return c > 3 && r && Object.defineProperty(target, key, r), r;
 };
+var __metadata = (this && this.__metadata) || function (k, v) {
+    if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
+};
 var ChainService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ChainService = void 0;
 const common_1 = require("@nestjs/common");
 const ethers_1 = require("ethers");
 const chains_config_1 = require("../config/chains.config");
+const config_1 = require("@nestjs/config");
 let ChainService = ChainService_1 = class ChainService {
-    constructor() {
+    constructor(configService) {
+        this.configService = configService;
         this.logger = new common_1.Logger(ChainService_1.name);
         this.providers = new Map();
         this.initializationPromise = null;
+        this.PRIVATE_KEY = this.configService.get('PRIVATE_KEY');
     }
     async onModuleInit() {
         this.initializationPromise = this.initializeProviders();
         await this.initializationPromise;
+    }
+    async onModuleDestroy() {
+        this.providers.forEach(provider => {
+            provider.destroy();
+        });
     }
     async initializeProviders() {
         this.logger.log('Initializing providers...');
@@ -39,6 +50,7 @@ let ChainService = ChainService_1 = class ChainService {
             });
             ws.on('close', () => {
                 this.logger.warn(`WebSocket connection closed for ${chainName}, attempting to reconnect...`);
+                provider.destroy();
                 setTimeout(() => {
                     this.initializeProvider(chainName, config);
                 }, 5000);
@@ -63,6 +75,10 @@ let ChainService = ChainService_1 = class ChainService {
         }
         return provider;
     }
+    async getSigner(chainName) {
+        const provider = await this.getProvider(chainName);
+        return new ethers_1.ethers.Wallet(this.PRIVATE_KEY, provider);
+    }
     getChainConfig(chainName) {
         const config = chains_config_1.chainsConfig[chainName];
         if (!config) {
@@ -76,6 +92,7 @@ let ChainService = ChainService_1 = class ChainService {
 };
 exports.ChainService = ChainService;
 exports.ChainService = ChainService = ChainService_1 = __decorate([
-    (0, common_1.Injectable)()
+    (0, common_1.Injectable)(),
+    __metadata("design:paramtypes", [config_1.ConfigService])
 ], ChainService);
 //# sourceMappingURL=chain.service.js.map

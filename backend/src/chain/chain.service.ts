@@ -1,18 +1,30 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ethers } from 'ethers';
 import { chainsConfig } from '../config/chains.config';
 import { ChainConfig } from '../interfaces/chain-config.interface';
+import { ConfigService } from '@nestjs/config';
 import WebSocket from 'ws';
 
 @Injectable()
-export class ChainService implements OnModuleInit {
+export class ChainService implements OnModuleInit, OnModuleDestroy {
     private readonly logger = new Logger(ChainService.name);
     private providers: Map<string, ethers.WebSocketProvider> = new Map();
     private initializationPromise: Promise<void> | null = null;
+    private readonly PRIVATE_KEY: string; // EOA 私钥
+
+    constructor(private readonly configService: ConfigService) {
+        this.PRIVATE_KEY = this.configService.get<string>('PRIVATE_KEY');
+    }
 
     async onModuleInit() {
         this.initializationPromise = this.initializeProviders();
         await this.initializationPromise;
+    }
+
+    async onModuleDestroy() {
+        this.providers.forEach(provider => {
+            provider.destroy();
+        });
     }
 
     private async initializeProviders() {
@@ -43,6 +55,7 @@ export class ChainService implements OnModuleInit {
             // 添加重连逻辑
             ws.on('close', () => {
                 this.logger.warn(`WebSocket connection closed for ${chainName}, attempting to reconnect...`);
+                provider.destroy();
                 setTimeout(() => {
                     this.initializeProvider(chainName, config);
                 }, 5000); // 5秒后重试
@@ -70,6 +83,14 @@ export class ChainService implements OnModuleInit {
             throw new Error(`Provider for chain ${chainName} not found`);
         }
         return provider;
+    }
+
+    async getSigner(chainName: string): Promise<ethers.Signer> {
+        // 初始化 provider
+        const provider = await this.getProvider(chainName);
+
+        // 初始化 signer
+        return new ethers.Wallet(this.PRIVATE_KEY, provider);
     }
 
     getChainConfig(chainName: string): ChainConfig {

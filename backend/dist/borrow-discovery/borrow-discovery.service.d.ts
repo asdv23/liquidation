@@ -24,12 +24,12 @@ export declare class BorrowDiscoveryService implements OnModuleInit, OnModuleDes
     onModuleInit(): Promise<void>;
     onModuleDestroy(): Promise<void>;
     private initializeAbis;
-    private getSigner;
     private getAbi;
     private getMulticall;
     private getAaveV3Pool;
     private getFlashLoanLiquidation;
     private getDataProvider;
+    private getPriceOracle;
     private loadTokenCache;
     private getTokenInfo;
     private formatAmount;

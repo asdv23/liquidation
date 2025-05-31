@@ -70,10 +70,6 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             throw error;
         }
     }
-    async getSigner(chainName) {
-        const provider = await this.chainService.getProvider(chainName);
-        return new ethers_1.ethers.Wallet(this.PRIVATE_KEY, provider);
-    }
     getAbi(name) {
         const abi = this.abiCache.get(name);
         if (!abi) {
@@ -82,30 +78,55 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         return abi;
     }
     async getMulticall(chainName) {
-        const signer = await this.getSigner(chainName);
+        const signer = await this.chainService.getSigner(chainName);
         const multicallContract = new ethers_1.ethers.Contract('0xcA11bde05977b3631167028862bE2a173976CA11', this.getAbi('multicall'), signer);
         return multicallContract;
     }
     async getAaveV3Pool(chainName) {
-        const signer = await this.getSigner(chainName);
+        const signer = await this.chainService.getSigner(chainName);
         const config = this.chainService.getChainConfig(chainName);
         const contract = new ethers_1.ethers.Contract(config.contracts.aavev3Pool, this.getAbi('aaveV3Pool'), signer);
         return contract;
     }
     async getFlashLoanLiquidation(chainName) {
-        const signer = await this.getSigner(chainName);
+        const signer = await this.chainService.getSigner(chainName);
         const config = this.chainService.getChainConfig(chainName);
         const flashLoanLiquidation = new ethers_1.ethers.Contract(config.contracts.flashLoanLiquidation, this.getAbi('flashLoanLiquidation'), signer);
         return flashLoanLiquidation;
     }
     async getDataProvider(chainName) {
-        const signer = await this.getSigner(chainName);
+        const signer = await this.chainService.getSigner(chainName);
         const aaveV3Pool = await this.getAaveV3Pool(chainName);
-        const addressesProviderAddress = await aaveV3Pool.ADDRESSES_PROVIDER();
+        let addressesProviderAddress = this.configService.get('addressesProviderAddress');
+        if (!addressesProviderAddress) {
+            addressesProviderAddress = await aaveV3Pool.ADDRESSES_PROVIDER();
+            this.configService.set('addressesProviderAddress', addressesProviderAddress);
+        }
         const addressesProvider = new ethers_1.ethers.Contract(addressesProviderAddress, this.getAbi('addressesProvider'), signer);
-        const dataProviderAddress = await addressesProvider.getPoolDataProvider();
+        let dataProviderAddress = this.configService.get('dataProviderAddress');
+        if (!dataProviderAddress) {
+            dataProviderAddress = await addressesProvider.getPoolDataProvider();
+            this.configService.set('dataProviderAddress', dataProviderAddress);
+        }
         const dataProvider = new ethers_1.ethers.Contract(dataProviderAddress, this.getAbi('dataProvider'), signer);
         return dataProvider;
+    }
+    async getPriceOracle(chainName) {
+        const signer = await this.chainService.getSigner(chainName);
+        const aaveV3Pool = await this.getAaveV3Pool(chainName);
+        let addressesProviderAddress = this.configService.get('addressesProviderAddress');
+        if (!addressesProviderAddress) {
+            addressesProviderAddress = await aaveV3Pool.ADDRESSES_PROVIDER();
+            this.configService.set('addressesProviderAddress', addressesProviderAddress);
+        }
+        const addressesProvider = new ethers_1.ethers.Contract(addressesProviderAddress, this.getAbi('addressesProvider'), signer);
+        let priceOracleAddress = this.configService.get('priceOracleAddress');
+        if (!priceOracleAddress) {
+            priceOracleAddress = await addressesProvider.getPriceOracle();
+            this.configService.set('priceOracleAddress', priceOracleAddress);
+        }
+        const priceOracle = new ethers_1.ethers.Contract(priceOracleAddress, this.getAbi('priceOracle'), signer);
+        return priceOracle;
     }
     async loadTokenCache() {
         try {
@@ -237,16 +258,19 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             var _a, _b;
             try {
                 user = user.toLowerCase();
-                const [collateralInfo, debtInfo] = await Promise.all([
+                const priceOracle = await this.getPriceOracle(chainName);
+                const [collateralInfo, debtInfo, collateralPrice, debtPrice] = await Promise.all([
                     this.getTokenInfo(chainName, collateralAsset, provider),
                     this.getTokenInfo(chainName, debtAsset, provider),
+                    priceOracle.getAssetPrice(collateralAsset),
+                    priceOracle.getAssetPrice(debtAsset)
                 ]);
                 this.logger.log(`[${chainName}] 😄 LiquidationCall event detected:`);
                 this.logger.log(`- Collateral Asset: ${collateralAsset} (${collateralInfo.symbol})`);
                 this.logger.log(`- Debt Asset: ${debtAsset} (${debtInfo.symbol})`);
                 this.logger.log(`- User: ${user}`);
-                this.logger.log(`- Debt to Cover: ${this.formatAmount(debtToCover, debtInfo.decimals)} ${debtInfo.symbol}`);
-                this.logger.log(`- Liquidated Amount: ${this.formatAmount(liquidatedCollateralAmount, collateralInfo.decimals)} ${collateralInfo.symbol}`);
+                this.logger.log(`- Debt to Cover: ${this.formatAmount(debtToCover, debtInfo.decimals)} ${debtInfo.symbol} = ${this.formatAmount(debtToCover * debtPrice, 6)} USD`);
+                this.logger.log(`- Liquidated Amount: ${this.formatAmount(liquidatedCollateralAmount, collateralInfo.decimals)} ${collateralInfo.symbol} = ${this.formatAmount(liquidatedCollateralAmount * collateralPrice, 6)} USD`);
                 this.logger.log(`- Liquidator: ${liquidator}`);
                 this.logger.log(`- Receive AToken: ${receiveAToken}`);
                 this.logger.log(`- Transaction Hash: ${(event === null || event === void 0 ? void 0 : event.transactionHash) || ((_a = event === null || event === void 0 ? void 0 : event.log) === null || _a === void 0 ? void 0 : _a.transactionHash)}`);
@@ -257,7 +281,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                     this.logger.log(`[${chainName}] Recorded liquidation for user ${user}`);
                 }
                 else {
-                    this.logger.log(`[${chainName}] No loan found for user ${user}, skipping liquidation record`);
+                    this.logger.log(`[${chainName}] No active loan found for user ${user}, skipping liquidation record`);
                 }
             }
             catch (error) {

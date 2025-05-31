@@ -91,14 +91,6 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         }
     }
 
-    private async getSigner(chainName: string): Promise<ethers.Signer> {
-        // 初始化 provider
-        const provider = await this.chainService.getProvider(chainName);
-
-        // 初始化 signer
-        return new ethers.Wallet(this.PRIVATE_KEY, provider);
-    }
-
     private getAbi(name: string): any {
         const abi = this.abiCache.get(name);
         if (!abi) {
@@ -108,7 +100,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
     }
 
     private async getMulticall(chainName: string): Promise<ethers.Contract> {
-        const signer = await this.getSigner(chainName);
+        const signer = await this.chainService.getSigner(chainName);
         const multicallContract = new ethers.Contract(
             '0xcA11bde05977b3631167028862bE2a173976CA11',
             this.getAbi('multicall'),
@@ -118,7 +110,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
     }
 
     private async getAaveV3Pool(chainName: string): Promise<ethers.Contract> {
-        const signer = await this.getSigner(chainName);
+        const signer = await this.chainService.getSigner(chainName);
         const config = this.chainService.getChainConfig(chainName);
         const contract = new ethers.Contract(
             config.contracts.aavev3Pool,
@@ -129,7 +121,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
     }
 
     private async getFlashLoanLiquidation(chainName: string): Promise<ethers.Contract> {
-        const signer = await this.getSigner(chainName);
+        const signer = await this.chainService.getSigner(chainName);
         const config = this.chainService.getChainConfig(chainName);
         const flashLoanLiquidation = new ethers.Contract(
             config.contracts.flashLoanLiquidation,
@@ -140,23 +132,63 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
     }
 
     private async getDataProvider(chainName: string): Promise<ethers.Contract> {
-        const signer = await this.getSigner(chainName);
-        // addressesProvider
+        const signer = await this.chainService.getSigner(chainName);
+        // aaveV3Pool
         const aaveV3Pool = await this.getAaveV3Pool(chainName);
-        const addressesProviderAddress = await aaveV3Pool.ADDRESSES_PROVIDER();
+        // addressesProvider
+        let addressesProviderAddress = this.configService.get('addressesProviderAddress');
+        if (!addressesProviderAddress) {
+            addressesProviderAddress = await aaveV3Pool.ADDRESSES_PROVIDER();
+            this.configService.set('addressesProviderAddress', addressesProviderAddress);
+        }
         const addressesProvider = new ethers.Contract(
             addressesProviderAddress,
             this.getAbi('addressesProvider'),
             signer
         );
+
         // dataProvider
-        const dataProviderAddress = await addressesProvider.getPoolDataProvider();
+        let dataProviderAddress = this.configService.get('dataProviderAddress');
+        if (!dataProviderAddress) {
+            dataProviderAddress = await addressesProvider.getPoolDataProvider();
+            this.configService.set('dataProviderAddress', dataProviderAddress);
+        }
         const dataProvider = new ethers.Contract(
             dataProviderAddress,
             this.getAbi('dataProvider'),
             signer
         );
         return dataProvider;
+    }
+
+    private async getPriceOracle(chainName: string): Promise<ethers.Contract> {
+        const signer = await this.chainService.getSigner(chainName);
+        // aaveV3Pool
+        const aaveV3Pool = await this.getAaveV3Pool(chainName);
+        // addressesProvider
+        let addressesProviderAddress = this.configService.get('addressesProviderAddress');
+        if (!addressesProviderAddress) {
+            addressesProviderAddress = await aaveV3Pool.ADDRESSES_PROVIDER();
+            this.configService.set('addressesProviderAddress', addressesProviderAddress);
+        }
+        const addressesProvider = new ethers.Contract(
+            addressesProviderAddress,
+            this.getAbi('addressesProvider'),
+            signer
+        );
+
+        // priceOracle
+        let priceOracleAddress = this.configService.get('priceOracleAddress');
+        if (!priceOracleAddress) {
+            priceOracleAddress = await addressesProvider.getPriceOracle();
+            this.configService.set('priceOracleAddress', priceOracleAddress);
+        }
+        const priceOracle = new ethers.Contract(
+            priceOracleAddress,
+            this.getAbi('priceOracle'),
+            signer
+        );
+        return priceOracle;
     }
 
 
@@ -312,16 +344,19 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             receiveAToken: boolean, event: any) => {
             try {
                 user = user.toLowerCase();
-                const [collateralInfo, debtInfo] = await Promise.all([
+                const priceOracle = await this.getPriceOracle(chainName);
+                const [collateralInfo, debtInfo, collateralPrice, debtPrice] = await Promise.all([
                     this.getTokenInfo(chainName, collateralAsset, provider),
                     this.getTokenInfo(chainName, debtAsset, provider),
+                    priceOracle.getAssetPrice(collateralAsset),
+                    priceOracle.getAssetPrice(debtAsset)
                 ]);
                 this.logger.log(`[${chainName}] 😄 LiquidationCall event detected:`);
                 this.logger.log(`- Collateral Asset: ${collateralAsset} (${collateralInfo.symbol})`);
                 this.logger.log(`- Debt Asset: ${debtAsset} (${debtInfo.symbol})`);
                 this.logger.log(`- User: ${user}`);
-                this.logger.log(`- Debt to Cover: ${this.formatAmount(debtToCover, debtInfo.decimals)} ${debtInfo.symbol}`);
-                this.logger.log(`- Liquidated Amount: ${this.formatAmount(liquidatedCollateralAmount, collateralInfo.decimals)} ${collateralInfo.symbol}`);
+                this.logger.log(`- Debt to Cover: ${this.formatAmount(debtToCover, debtInfo.decimals)} ${debtInfo.symbol} = ${this.formatAmount(debtToCover * debtPrice, 6)} USD`);
+                this.logger.log(`- Liquidated Amount: ${this.formatAmount(liquidatedCollateralAmount, collateralInfo.decimals)} ${collateralInfo.symbol} = ${this.formatAmount(liquidatedCollateralAmount * collateralPrice, 6)} USD`);
                 this.logger.log(`- Liquidator: ${liquidator}`);
                 this.logger.log(`- Receive AToken: ${receiveAToken}`);
                 this.logger.log(`- Transaction Hash: ${event?.transactionHash || event?.log?.transactionHash}`);
@@ -337,7 +372,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                     );
                     this.logger.log(`[${chainName}] Recorded liquidation for user ${user}`);
                 } else {
-                    this.logger.log(`[${chainName}] No loan found for user ${user}, skipping liquidation record`);
+                    this.logger.log(`[${chainName}] No active loan found for user ${user}, skipping liquidation record`);
                 }
             } catch (error) {
                 this.logger.error(`[${chainName}] Error processing LiquidationCall event: ${error.message}`);
