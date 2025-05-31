@@ -42,6 +42,7 @@ export declare class BorrowDiscoveryService implements OnModuleInit, OnModuleDes
     private formatDate;
     private checkHealthFactorsBatch;
     private processBatch;
+    private processUser;
     private getUserAccountDataBatch;
     private calculateHealthFactor;
     private calculateWaitTime;

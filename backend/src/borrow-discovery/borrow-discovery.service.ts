@@ -468,7 +468,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                         )
                     ]);
                 } catch (error) {
-                    this.logger.error(`[${chainName}] Error processing batch ${batchIndex + 1}: ${error.message}`);
+                    this.logger.error(`[${chainName}] Error processing batch ${batchIndex + 1}/${batches.length}: ${error.message}`);
                 }
             }));
 
@@ -487,64 +487,82 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         const accountDataMap = await this.getUserAccountDataBatch(chainName, aaveV3Pool, batchUsers);
         const lastLiquidationMap = this.lastLiquidationAttempt.get(chainName)!;
 
-        for (const user of batchUsers) {
+        // 并发处理每个用户
+        await Promise.all(batchUsers.map(async (user) => {
             const accountData = accountDataMap.get(user);
-            if (!accountData) continue;
+            if (!accountData) return;
 
-            const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
-            const totalDebt = Number(ethers.formatUnits(accountData.totalDebtBase, 8));
-
-            // 如果总债务小于 this.MIN_DEBT USD，则从内存和数据库中移除该用户
-            if (totalDebt < this.MIN_DEBT) {
-                activeLoansMap.delete(user);
-                lastLiquidationMap.delete(user); // 清理清算记录
-                await this.databaseService.deactivateLoan(chainName, user);
-                this.logger.log(`[${chainName}] Removed user ${user} from active loans and database as total debt is less than ${this.MIN_DEBT} USD`);
-                continue;
-            }
-
-            // 如果健康因子低于清算阈值，尝试清算
-            if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
-                const lastAttemptHealthFactor = lastLiquidationMap.get(user);
-
-                // 如果是首次尝试清算，或者新的健康因子比上次更低，则执行清算
-                if (lastAttemptHealthFactor === undefined || healthFactor < lastAttemptHealthFactor.healthFactor) {
-                    this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}, attempting liquidation`);
-                    // 记录此次清算尝试的健康因子
-                    lastLiquidationMap.set(user, { healthFactor: healthFactor, retryCount: lastAttemptHealthFactor?.retryCount + 1 || 1 });
-                    await this.executeLiquidation(chainName, user, healthFactor, aaveV3Pool);
-                } else {
-                    this.logger.log(`[${chainName}] Skipping liquidation for user ${user} as current health factor ${healthFactor} is not lower than last attempt ${lastAttemptHealthFactor.healthFactor}, retry count ${lastAttemptHealthFactor.retryCount}`);
-                }
-
-                continue;
-            }
-
-            // 如果健康因子高于清算阈值，清除清算记录
-            if (lastLiquidationMap.has(user)) {
-                lastLiquidationMap.delete(user);
-            }
-
-            // 更新下次检查时间
-            const waitTime = this.calculateWaitTime(chainName, healthFactor);
-            const nextCheckTime = new Date(Date.now() + waitTime);
-            const formattedDate = this.formatDate(nextCheckTime);
-            this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate}), healthFactor: ${healthFactor}`);
-
-            // 更新内存中的健康因子和下次检查时间
-            activeLoansMap.set(user, {
-                nextCheckTime: nextCheckTime,
-                healthFactor: healthFactor
-            });
-
-            // 更新数据库中的健康因子和下次检查时间
-            await this.databaseService.updateLoanHealthFactor(
+            await this.processUser(
                 chainName,
                 user,
-                healthFactor,
-                nextCheckTime
+                accountData,
+                activeLoansMap,
+                lastLiquidationMap,
+                aaveV3Pool
             );
+        }));
+    }
+
+    private async processUser(
+        chainName: string,
+        user: string,
+        accountData: UserAccountData,
+        activeLoansMap: Map<string, LoanInfo>,
+        lastLiquidationMap: Map<string, { healthFactor: number, retryCount: number }>,
+        aaveV3Pool: ethers.Contract
+    ) {
+        const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
+        const totalDebt = Number(ethers.formatUnits(accountData.totalDebtBase, 8));
+
+        // 如果总债务小于 this.MIN_DEBT USD，则从内存和数据库中移除该用户
+        if (totalDebt < this.MIN_DEBT) {
+            activeLoansMap.delete(user);
+            lastLiquidationMap.delete(user); // 清理清算记录
+            await this.databaseService.deactivateLoan(chainName, user);
+            this.logger.log(`[${chainName}] Removed user ${user} from active loans and database as total debt is less than ${this.MIN_DEBT} USD`);
+            return;
         }
+
+        // 如果健康因子低于清算阈值，尝试清算
+        if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
+            const lastAttemptHealthFactor = lastLiquidationMap.get(user);
+
+            // 如果是首次尝试清算，或者新的健康因子比上次更低，则执行清算
+            if (lastAttemptHealthFactor === undefined || healthFactor < lastAttemptHealthFactor.healthFactor) {
+                this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}, attempting liquidation`);
+                // 记录此次清算尝试的健康因子
+                lastLiquidationMap.set(user, { healthFactor: healthFactor, retryCount: lastAttemptHealthFactor?.retryCount + 1 || 1 });
+                await this.executeLiquidation(chainName, user, healthFactor, aaveV3Pool);
+            } else {
+                this.logger.log(`[${chainName}] Skip liquidation for ${user} as health factor ${healthFactor} >= ${lastAttemptHealthFactor.healthFactor}, retry ${lastAttemptHealthFactor.retryCount}`);
+            }
+            return;
+        }
+
+        // 如果健康因子高于清算阈值，清除清算记录
+        if (lastLiquidationMap.has(user)) {
+            lastLiquidationMap.delete(user);
+        }
+
+        // 更新下次检查时间
+        const waitTime = this.calculateWaitTime(chainName, healthFactor);
+        const nextCheckTime = new Date(Date.now() + waitTime);
+        const formattedDate = this.formatDate(nextCheckTime);
+        this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate}), healthFactor: ${healthFactor}`);
+
+        // 更新内存中的健康因子和下次检查时间
+        activeLoansMap.set(user, {
+            nextCheckTime: nextCheckTime,
+            healthFactor: healthFactor
+        });
+
+        // 更新数据库中的健康因子和下次检查时间
+        await this.databaseService.updateLoanHealthFactor(
+            chainName,
+            user,
+            healthFactor,
+            nextCheckTime
+        );
     }
 
     private async getUserAccountDataBatch(chainName: string, contract: ethers.Contract, users: string[]): Promise<Map<string, UserAccountData>> {
@@ -580,6 +598,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             return new Map();
         }
     }
+
 
     private calculateHealthFactor(healthFactor: bigint): number {
         // 将 bigint 转换为 number，并除以 1e18 得到实际值
@@ -730,7 +749,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 return;
             }
             if (maxCollateralAsset == maxDebtAsset && healthFactor > this.SAME_ASSET_LIQUIDATION_THRESHOLD) {
-                this.logger.log(`[${chainName}] Skipping liquidation for user ${user} as collateral and debt are the same asset and health factor ${healthFactor} is greater than ${this.SAME_ASSET_LIQUIDATION_THRESHOLD}, no need to liquidate`);
+                this.logger.log(`[${chainName}] Skip liquidation for ${user} as same asset and health factor ${healthFactor} > ${this.SAME_ASSET_LIQUIDATION_THRESHOLD}`);
                 return;
             }
 

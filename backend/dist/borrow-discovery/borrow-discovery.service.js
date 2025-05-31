@@ -359,7 +359,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                     ]);
                 }
                 catch (error) {
-                    this.logger.error(`[${chainName}] Error processing batch ${batchIndex + 1}: ${error.message}`);
+                    this.logger.error(`[${chainName}] Error processing batch ${batchIndex + 1}/${batches.length}: ${error.message}`);
                 }
             }));
             this.logger.log(`[${chainName}] Completed processing all ${batches.length} batches`);
@@ -372,44 +372,47 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         const aaveV3Pool = await this.getAaveV3Pool(chainName);
         const accountDataMap = await this.getUserAccountDataBatch(chainName, aaveV3Pool, batchUsers);
         const lastLiquidationMap = this.lastLiquidationAttempt.get(chainName);
-        for (const user of batchUsers) {
+        await Promise.all(batchUsers.map(async (user) => {
             const accountData = accountDataMap.get(user);
             if (!accountData)
-                continue;
-            const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
-            const totalDebt = Number(ethers_1.ethers.formatUnits(accountData.totalDebtBase, 8));
-            if (totalDebt < this.MIN_DEBT) {
-                activeLoansMap.delete(user);
-                lastLiquidationMap.delete(user);
-                await this.databaseService.deactivateLoan(chainName, user);
-                this.logger.log(`[${chainName}] Removed user ${user} from active loans and database as total debt is less than ${this.MIN_DEBT} USD`);
-                continue;
-            }
-            if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
-                const lastAttemptHealthFactor = lastLiquidationMap.get(user);
-                if (lastAttemptHealthFactor === undefined || healthFactor < lastAttemptHealthFactor.healthFactor) {
-                    this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}, attempting liquidation`);
-                    lastLiquidationMap.set(user, { healthFactor: healthFactor, retryCount: (lastAttemptHealthFactor === null || lastAttemptHealthFactor === void 0 ? void 0 : lastAttemptHealthFactor.retryCount) + 1 || 1 });
-                    await this.executeLiquidation(chainName, user, healthFactor, aaveV3Pool);
-                }
-                else {
-                    this.logger.log(`[${chainName}] Skipping liquidation for user ${user} as current health factor ${healthFactor} is not lower than last attempt ${lastAttemptHealthFactor.healthFactor}, retry count ${lastAttemptHealthFactor.retryCount}`);
-                }
-                continue;
-            }
-            if (lastLiquidationMap.has(user)) {
-                lastLiquidationMap.delete(user);
-            }
-            const waitTime = this.calculateWaitTime(chainName, healthFactor);
-            const nextCheckTime = new Date(Date.now() + waitTime);
-            const formattedDate = this.formatDate(nextCheckTime);
-            this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate}), healthFactor: ${healthFactor}`);
-            activeLoansMap.set(user, {
-                nextCheckTime: nextCheckTime,
-                healthFactor: healthFactor
-            });
-            await this.databaseService.updateLoanHealthFactor(chainName, user, healthFactor, nextCheckTime);
+                return;
+            await this.processUser(chainName, user, accountData, activeLoansMap, lastLiquidationMap, aaveV3Pool);
+        }));
+    }
+    async processUser(chainName, user, accountData, activeLoansMap, lastLiquidationMap, aaveV3Pool) {
+        const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
+        const totalDebt = Number(ethers_1.ethers.formatUnits(accountData.totalDebtBase, 8));
+        if (totalDebt < this.MIN_DEBT) {
+            activeLoansMap.delete(user);
+            lastLiquidationMap.delete(user);
+            await this.databaseService.deactivateLoan(chainName, user);
+            this.logger.log(`[${chainName}] Removed user ${user} from active loans and database as total debt is less than ${this.MIN_DEBT} USD`);
+            return;
         }
+        if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
+            const lastAttemptHealthFactor = lastLiquidationMap.get(user);
+            if (lastAttemptHealthFactor === undefined || healthFactor < lastAttemptHealthFactor.healthFactor) {
+                this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}, attempting liquidation`);
+                lastLiquidationMap.set(user, { healthFactor: healthFactor, retryCount: (lastAttemptHealthFactor === null || lastAttemptHealthFactor === void 0 ? void 0 : lastAttemptHealthFactor.retryCount) + 1 || 1 });
+                await this.executeLiquidation(chainName, user, healthFactor, aaveV3Pool);
+            }
+            else {
+                this.logger.log(`[${chainName}] Skip liquidation for ${user} as health factor ${healthFactor} >= ${lastAttemptHealthFactor.healthFactor}, retry ${lastAttemptHealthFactor.retryCount}`);
+            }
+            return;
+        }
+        if (lastLiquidationMap.has(user)) {
+            lastLiquidationMap.delete(user);
+        }
+        const waitTime = this.calculateWaitTime(chainName, healthFactor);
+        const nextCheckTime = new Date(Date.now() + waitTime);
+        const formattedDate = this.formatDate(nextCheckTime);
+        this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate}), healthFactor: ${healthFactor}`);
+        activeLoansMap.set(user, {
+            nextCheckTime: nextCheckTime,
+            healthFactor: healthFactor
+        });
+        await this.databaseService.updateLoanHealthFactor(chainName, user, healthFactor, nextCheckTime);
     }
     async getUserAccountDataBatch(chainName, contract, users) {
         try {
@@ -541,7 +544,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                 return;
             }
             if (maxCollateralAsset == maxDebtAsset && healthFactor > this.SAME_ASSET_LIQUIDATION_THRESHOLD) {
-                this.logger.log(`[${chainName}] Skipping liquidation for user ${user} as collateral and debt are the same asset and health factor ${healthFactor} is greater than ${this.SAME_ASSET_LIQUIDATION_THRESHOLD}, no need to liquidate`);
+                this.logger.log(`[${chainName}] Skip liquidation for ${user} as same asset and health factor ${healthFactor} > ${this.SAME_ASSET_LIQUIDATION_THRESHOLD}`);
                 return;
             }
             const collateralTokenInfo = await this.getTokenInfo(chainName, maxCollateralAsset);
