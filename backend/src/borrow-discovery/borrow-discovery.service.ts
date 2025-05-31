@@ -136,10 +136,11 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         // aaveV3Pool
         const aaveV3Pool = await this.getAaveV3Pool(chainName);
         // addressesProvider
-        let addressesProviderAddress = this.configService.get('addressesProviderAddress');
+        let addressesProviderAddress = this.configService.get(`${chainName}-addressesProviderAddress`);
         if (!addressesProviderAddress) {
             addressesProviderAddress = await aaveV3Pool.ADDRESSES_PROVIDER();
-            this.configService.set('addressesProviderAddress', addressesProviderAddress);
+            this.configService.set(`${chainName}-addressesProviderAddress`, addressesProviderAddress);
+            this.logger.log(`[${chainName}] set addressesProviderAddress: ${addressesProviderAddress}`);
         }
         const addressesProvider = new ethers.Contract(
             addressesProviderAddress,
@@ -148,10 +149,11 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         );
 
         // dataProvider
-        let dataProviderAddress = this.configService.get('dataProviderAddress');
+        let dataProviderAddress = this.configService.get(`${chainName}-dataProviderAddress`);
         if (!dataProviderAddress) {
             dataProviderAddress = await addressesProvider.getPoolDataProvider();
-            this.configService.set('dataProviderAddress', dataProviderAddress);
+            this.configService.set(`${chainName}-dataProviderAddress`, dataProviderAddress);
+            this.logger.log(`[${chainName}] set dataProviderAddress: ${dataProviderAddress}`);
         }
         const dataProvider = new ethers.Contract(
             dataProviderAddress,
@@ -166,10 +168,11 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         // aaveV3Pool
         const aaveV3Pool = await this.getAaveV3Pool(chainName);
         // addressesProvider
-        let addressesProviderAddress = this.configService.get('addressesProviderAddress');
+        let addressesProviderAddress = this.configService.get(`${chainName}-addressesProviderAddress`);
         if (!addressesProviderAddress) {
             addressesProviderAddress = await aaveV3Pool.ADDRESSES_PROVIDER();
-            this.configService.set('addressesProviderAddress', addressesProviderAddress);
+            this.configService.set(`${chainName}-addressesProviderAddress`, addressesProviderAddress);
+            this.logger.log(`[${chainName}] set addressesProviderAddress: ${addressesProviderAddress}`);
         }
         const addressesProvider = new ethers.Contract(
             addressesProviderAddress,
@@ -178,10 +181,11 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         );
 
         // priceOracle
-        let priceOracleAddress = this.configService.get('priceOracleAddress');
+        let priceOracleAddress = this.configService.get(`${chainName}-priceOracleAddress`);
         if (!priceOracleAddress) {
             priceOracleAddress = await addressesProvider.getPriceOracle();
-            this.configService.set('priceOracleAddress', priceOracleAddress);
+            this.configService.set(`${chainName}-priceOracleAddress`, priceOracleAddress);
+            this.logger.log(`[${chainName}] set priceOracleAddress: ${priceOracleAddress}`);
         }
         const priceOracle = new ethers.Contract(
             priceOracleAddress,

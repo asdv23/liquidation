@@ -97,16 +97,18 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
     async getDataProvider(chainName) {
         const signer = await this.chainService.getSigner(chainName);
         const aaveV3Pool = await this.getAaveV3Pool(chainName);
-        let addressesProviderAddress = this.configService.get('addressesProviderAddress');
+        let addressesProviderAddress = this.configService.get(`${chainName}-addressesProviderAddress`);
         if (!addressesProviderAddress) {
             addressesProviderAddress = await aaveV3Pool.ADDRESSES_PROVIDER();
-            this.configService.set('addressesProviderAddress', addressesProviderAddress);
+            this.configService.set(`${chainName}-addressesProviderAddress`, addressesProviderAddress);
+            this.logger.log(`[${chainName}] set addressesProviderAddress: ${addressesProviderAddress}`);
         }
         const addressesProvider = new ethers_1.ethers.Contract(addressesProviderAddress, this.getAbi('addressesProvider'), signer);
-        let dataProviderAddress = this.configService.get('dataProviderAddress');
+        let dataProviderAddress = this.configService.get(`${chainName}-dataProviderAddress`);
         if (!dataProviderAddress) {
             dataProviderAddress = await addressesProvider.getPoolDataProvider();
-            this.configService.set('dataProviderAddress', dataProviderAddress);
+            this.configService.set(`${chainName}-dataProviderAddress`, dataProviderAddress);
+            this.logger.log(`[${chainName}] set dataProviderAddress: ${dataProviderAddress}`);
         }
         const dataProvider = new ethers_1.ethers.Contract(dataProviderAddress, this.getAbi('dataProvider'), signer);
         return dataProvider;
@@ -114,16 +116,18 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
     async getPriceOracle(chainName) {
         const signer = await this.chainService.getSigner(chainName);
         const aaveV3Pool = await this.getAaveV3Pool(chainName);
-        let addressesProviderAddress = this.configService.get('addressesProviderAddress');
+        let addressesProviderAddress = this.configService.get(`${chainName}-addressesProviderAddress`);
         if (!addressesProviderAddress) {
             addressesProviderAddress = await aaveV3Pool.ADDRESSES_PROVIDER();
-            this.configService.set('addressesProviderAddress', addressesProviderAddress);
+            this.configService.set(`${chainName}-addressesProviderAddress`, addressesProviderAddress);
+            this.logger.log(`[${chainName}] set addressesProviderAddress: ${addressesProviderAddress}`);
         }
         const addressesProvider = new ethers_1.ethers.Contract(addressesProviderAddress, this.getAbi('addressesProvider'), signer);
-        let priceOracleAddress = this.configService.get('priceOracleAddress');
+        let priceOracleAddress = this.configService.get(`${chainName}-priceOracleAddress`);
         if (!priceOracleAddress) {
             priceOracleAddress = await addressesProvider.getPriceOracle();
-            this.configService.set('priceOracleAddress', priceOracleAddress);
+            this.configService.set(`${chainName}-priceOracleAddress`, priceOracleAddress);
+            this.logger.log(`[${chainName}] set priceOracleAddress: ${priceOracleAddress}`);
         }
         const priceOracle = new ethers_1.ethers.Contract(priceOracleAddress, this.getAbi('priceOracle'), signer);
         return priceOracle;
