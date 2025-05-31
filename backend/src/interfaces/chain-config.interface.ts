@@ -5,4 +5,5 @@ export interface ChainConfig {
         [key: string]: string;
     };
     blockTime: number;
+    minWaitTime: number;
 } 

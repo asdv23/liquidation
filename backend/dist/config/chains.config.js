@@ -16,8 +16,14 @@ function getChainsConfigFromEnv() {
             const rpcUrl = process.env[`${chainKey.toUpperCase()}_RPC_URL`];
             const aavev3Pool = process.env[`${chainKey.toUpperCase()}_AAVE_V3_POOL`];
             const flashLoanLiquidation = process.env[`${chainKey.toUpperCase()}_FLASH_LOAN_LIQUIDATION`];
-            if (!rpcUrl || !aavev3Pool || !flashLoanLiquidation) {
-                logger.warn(`Missing configuration for chain ${chainKey}: RPC_URL=${rpcUrl}, AAVE_V3_POOL=${aavev3Pool}, FLASH_LOAN_LIQUIDATION=${flashLoanLiquidation}`);
+            const blockTime = process.env[`${chainKey.toUpperCase()}_BLOCK_TIME`];
+            if (!rpcUrl || !aavev3Pool || !flashLoanLiquidation || !blockTime) {
+                logger.warn(`Missing configuration for chain ${chainKey}: RPC_URL=${rpcUrl}, AAVE_V3_POOL=${aavev3Pool}, FLASH_LOAN_LIQUIDATION=${flashLoanLiquidation}, BLOCK_TIME=${blockTime}`);
+                continue;
+            }
+            const blockTimeMs = parseInt(blockTime, 10);
+            if (isNaN(blockTimeMs)) {
+                logger.warn(`Invalid BLOCK_TIME for chain ${chainKey}: ${blockTime}`);
                 continue;
             }
             chains[chainKey] = {
@@ -27,13 +33,15 @@ function getChainsConfigFromEnv() {
                     aavev3Pool,
                     flashLoanLiquidation,
                 },
-                blockTime: 2,
+                blockTime: blockTimeMs,
+                minWaitTime: Math.floor(blockTimeMs / 2),
             };
-            logger.log(`Loaded chain config for ${chainKey}: RPC=${rpcUrl}, AAVE_V3_POOL=${aavev3Pool}, FlashLoanLiquidation=${flashLoanLiquidation}`);
+            logger.log(`Loaded chain config for ${chainKey}: RPC=${rpcUrl}, AAVE_V3_POOL=${aavev3Pool}, FlashLoanLiquidation=${flashLoanLiquidation}, BlockTime=${blockTimeMs}ms, MinWaitTime=${Math.floor(blockTimeMs / 2)}ms`);
         }
     }
     if (Object.keys(chains).length === 0) {
         logger.error('No chain configurations found in environment variables!');
+        ``;
     }
     else {
         logger.log(`Successfully loaded ${Object.keys(chains).length} chain configurations: ${JSON.stringify(chains, null, 2)}`);

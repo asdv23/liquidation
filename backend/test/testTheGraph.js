@@ -12,13 +12,13 @@ const prisma = new PrismaClient();
 // const endpoint = 'https://gateway.thegraph.com/api/subgraphs/id/D7mapexM5ZsQckLJai2FawTKXJ7CqYGKM8PErnS3cJi9';
 // op
 // const chainName = 'op';
-// const endpoint = 'https://gateway.thegraph.com/api/subgraphs/id/3RWFxWNstn4nP3dXiDfKi9GgBoHx7xzc7APkXs1MLEgi';
+// const endpoint = 'https://gateway.thegraph.com/api/deployments/id/QmRMNoAvjrr4DXT4tBJafCAPr2TQuRztMScyu51kKt542j';
 // arb
-// const chainName = 'arb';
-// const endpoint = 'https://gateway.thegraph.com/api/subgraphs/id/4xyasjQeREe7PxnF6wVdobZvCw5mhoHZq3T7guRpuNPf';
+const chainName = 'arb';
+const endpoint = 'https://gateway.thegraph.com/api/subgraphs/id/4xyasjQeREe7PxnF6wVdobZvCw5mhoHZq3T7guRpuNPf';
 // avalanche
-const chainName = 'avax';
-const endpoint = 'https://gateway.thegraph.com/api/subgraphs/id/72Cez54APnySAn6h8MswzYkwaL9KjvuuKnKArnPJ8yxb';
+// const chainName = 'avax';
+// const endpoint = 'https://gateway.thegraph.com/api/subgraphs/id/72Cez54APnySAn6h8MswzYkwaL9KjvuuKnKArnPJ8yxb';
 
 const PAGE_SIZE = 1000; // 每页查询数量
 
@@ -36,7 +36,9 @@ function formatTimestamp(timestamp) {
     });
 }
 
-// 1745555511: Tue Feb 25 2025 12:31:51 GMT+0800 (中国标准时间)
+// 1730921931: Thu Nov 07 2024 03:38:51 GMT+0800 (中国标准时间)
+// 1738223465: Thu Jan 30 2025 15:51:05 GMT+0800 (中国标准时间)
+// 1745555511: Fri Apr 25 2025 12:31:51 GMT+0800 (中国标准时间)
 // 1745979694: Wed Apr 30 2025 10:21:34 GMT+0800 (中国标准时间)
 async function fetchBorrowsPage(lastTimestamp = null) {
     const query = `{
@@ -45,7 +47,8 @@ async function fetchBorrowsPage(lastTimestamp = null) {
             orderBy: timestamp
             orderDirection: desc
             where: {
-                timestamp_gte: "1745555511"
+                timestamp_gte: "1738223465",
+                timestamp_lte: "1745555511"
                 ${lastTimestamp ? `timestamp_lt: "${lastTimestamp}"` : ''}
             }
         ) {

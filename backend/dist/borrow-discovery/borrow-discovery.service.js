@@ -27,13 +27,14 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         this.activeLoans = new Map();
         this.tokenCache = new Map();
         this.lastLiquidationAttempt = new Map();
-        this.LIQUIDATION_THRESHOLD = 1.00001;
-        this.CRITICAL_THRESHOLD = 1.001;
+        this.LIQUIDATION_THRESHOLD = 1.005;
+        this.CRITICAL_THRESHOLD = 1.01;
         this.HEALTH_FACTOR_THRESHOLD = 1.1;
+        this.MIN_DEBT = 5;
         this.abiCache = new Map();
-        this.MIN_WAIT_TIME = this.configService.get('MIN_CHECK_INTERVAL', 1000);
+        this.MIN_WAIT_TIME = this.configService.get('MIN_CHECK_INTERVAL', 200);
         this.MAX_WAIT_TIME = this.configService.get('MAX_CHECK_INTERVAL', 4 * 60 * 60 * 1000);
-        this.CHAIN_CHECK_TIMEOUT = this.configService.get('CHAIN_CHECK_TIMEOUT', 5000);
+        this.BATCH_CHECK_TIMEOUT = this.configService.get('BATCH_CHECK_TIMEOUT', 5000);
         this.PRIVATE_KEY = this.configService.get('PRIVATE_KEY');
     }
     async onModuleInit() {
@@ -46,10 +47,6 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
     }
     async onModuleDestroy() {
         this.logger.log('BorrowDiscoveryService destroying...');
-        if (this.checkInterval) {
-            this.logger.log('Clearing check interval');
-            clearInterval(this.checkInterval);
-        }
     }
     async initializeAbis() {
         try {
@@ -238,6 +235,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         return async (collateralAsset, debtAsset, user, debtToCover, liquidatedCollateralAmount, liquidator, receiveAToken, event) => {
             var _a, _b;
             try {
+                user = user.toLowerCase();
                 const [collateralInfo, debtInfo] = await Promise.all([
                     this.getTokenInfo(chainName, collateralAsset, provider),
                     this.getTokenInfo(chainName, debtAsset, provider),
@@ -310,27 +308,17 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             isChecking = true;
             try {
                 const chains = Array.from(this.activeLoans.keys());
-                await Promise.all(chains.map(async (chainName) => {
-                    try {
-                        await Promise.race([
-                            this.checkHealthFactorsBatch(chainName),
-                            new Promise((_, reject) => setTimeout(() => reject(new Error(`Chain ${chainName} check timeout after ${this.CHAIN_CHECK_TIMEOUT}ms`)), this.CHAIN_CHECK_TIMEOUT))
-                        ]);
-                    }
-                    catch (error) {
-                        this.logger.error(`[${chainName}] Error in chain check: ${error.message}`);
-                    }
-                }));
+                await Promise.all(chains.map(chainName => this.checkHealthFactorsBatch(chainName)));
             }
             catch (error) {
                 this.logger.error(`Error in health factor checker: ${error.message}`);
             }
             finally {
                 isChecking = false;
+                setTimeout(checkAllLoans, this.MIN_WAIT_TIME);
             }
         };
         checkAllLoans();
-        this.checkInterval = setInterval(checkAllLoans, this.MIN_WAIT_TIME);
     }
     formatDate(date) {
         const year = date.getFullYear();
@@ -349,7 +337,6 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             if (!this.lastLiquidationAttempt.has(chainName)) {
                 this.lastLiquidationAttempt.set(chainName, new Map());
             }
-            const lastLiquidationMap = this.lastLiquidationAttempt.get(chainName);
             const usersToCheck = Array.from(activeLoansMap.entries())
                 .filter(([_, info]) => info.nextCheckTime <= new Date())
                 .map(([user]) => user);
@@ -359,50 +346,69 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             for (let i = 0; i < usersToCheck.length; i += BATCH_SIZE) {
                 const batchUsers = usersToCheck.slice(i, i + BATCH_SIZE);
                 this.logger.log(`[${chainName}] Checking health factors for batch ${i / BATCH_SIZE + 1}/${Math.ceil(usersToCheck.length / BATCH_SIZE)} (${batchUsers.length}/${activeLoansMap.size} users)...`);
-                const aaveV3Pool = await this.getAaveV3Pool(chainName);
-                const accountDataMap = await this.getUserAccountDataBatch(chainName, aaveV3Pool, batchUsers);
-                for (const user of batchUsers) {
-                    const accountData = accountDataMap.get(user);
-                    if (!accountData)
-                        continue;
-                    const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
-                    const totalDebt = Number(ethers_1.ethers.formatUnits(accountData.totalDebtBase, 8));
-                    if (totalDebt < 1) {
-                        activeLoansMap.delete(user);
-                        lastLiquidationMap.delete(user);
-                        await this.databaseService.deactivateLoan(chainName, user);
-                        this.logger.log(`[${chainName}] Removed user ${user} from active loans and database as total debt is less than 1 USD`);
-                        continue;
-                    }
-                    if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
-                        const lastAttemptHealthFactor = lastLiquidationMap.get(user);
-                        if (lastAttemptHealthFactor === undefined || healthFactor < lastAttemptHealthFactor) {
-                            this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}, attempting liquidation`);
-                            lastLiquidationMap.set(user, healthFactor);
-                            await this.executeLiquidation(chainName, user, healthFactor, aaveV3Pool);
-                        }
-                        else {
-                            this.logger.log(`[${chainName}] Skipping liquidation for user ${user} as current health factor ${healthFactor} is not lower than last attempt ${lastAttemptHealthFactor}`);
-                        }
-                        continue;
-                    }
-                    if (lastLiquidationMap.has(user)) {
-                        lastLiquidationMap.delete(user);
-                    }
-                    const waitTime = this.calculateWaitTime(healthFactor);
-                    const nextCheckTime = new Date(Date.now() + waitTime);
-                    const formattedDate = this.formatDate(nextCheckTime);
-                    this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate}), healthFactor: ${healthFactor}`);
-                    activeLoansMap.set(user, {
-                        nextCheckTime: nextCheckTime,
-                        healthFactor: healthFactor
-                    });
-                    await this.databaseService.updateLoanHealthFactor(chainName, user, healthFactor, nextCheckTime);
+                try {
+                    await Promise.race([
+                        this.processBatch(chainName, batchUsers, activeLoansMap),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error(`Batch check timeout after ${this.BATCH_CHECK_TIMEOUT}ms`)), this.BATCH_CHECK_TIMEOUT))
+                    ]);
+                }
+                catch (error) {
+                    this.logger.error(`[${chainName}] Error processing batch: ${error.message}`);
+                    continue;
                 }
             }
         }
         catch (error) {
             this.logger.error(`[${chainName}] Error checking health factors batch: ${error.message}`);
+        }
+    }
+    async processBatch(chainName, batchUsers, activeLoansMap) {
+        const aaveV3Pool = await this.getAaveV3Pool(chainName);
+        const accountDataMap = await this.getUserAccountDataBatch(chainName, aaveV3Pool, batchUsers);
+        const lastLiquidationMap = this.lastLiquidationAttempt.get(chainName);
+        for (const user of batchUsers) {
+            const accountData = accountDataMap.get(user);
+            if (!accountData)
+                continue;
+            const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
+            const totalDebt = Number(ethers_1.ethers.formatUnits(accountData.totalDebtBase, 8));
+            if (totalDebt < this.MIN_DEBT) {
+                activeLoansMap.delete(user);
+                lastLiquidationMap.delete(user);
+                await this.databaseService.deactivateLoan(chainName, user);
+                this.logger.log(`[${chainName}] Removed user ${user} from active loans and database as total debt is less than ${this.MIN_DEBT} USD`);
+                continue;
+            }
+            if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
+                const lastAttemptHealthFactor = lastLiquidationMap.get(user);
+                if (lastAttemptHealthFactor === undefined || healthFactor < lastAttemptHealthFactor.healthFactor) {
+                    this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}, attempting liquidation`);
+                    lastLiquidationMap.set(user, { healthFactor: healthFactor, retryCount: (lastAttemptHealthFactor === null || lastAttemptHealthFactor === void 0 ? void 0 : lastAttemptHealthFactor.retryCount) + 1 || 1 });
+                    await this.executeLiquidation(chainName, user, healthFactor, aaveV3Pool);
+                }
+                else {
+                    this.logger.log(`[${chainName}] Skipping liquidation for user ${user} as current health factor ${healthFactor} is not lower than last attempt ${lastAttemptHealthFactor.healthFactor}, retry count ${lastAttemptHealthFactor.retryCount}`);
+                }
+                if ((lastAttemptHealthFactor === null || lastAttemptHealthFactor === void 0 ? void 0 : lastAttemptHealthFactor.retryCount) >= 3) {
+                    this.logger.log(`[${chainName}] Skipping liquidation for user ${user} as retry count ${lastAttemptHealthFactor.retryCount} >= 3`);
+                    lastLiquidationMap.delete(user);
+                    await this.databaseService.deactivateLoan(chainName, user);
+                    this.logger.log(`[${chainName}] Removed user ${user} from active loans and database as retry count >= 3`);
+                }
+                continue;
+            }
+            if (lastLiquidationMap.has(user)) {
+                lastLiquidationMap.delete(user);
+            }
+            const waitTime = this.calculateWaitTime(chainName, healthFactor);
+            const nextCheckTime = new Date(Date.now() + waitTime);
+            const formattedDate = this.formatDate(nextCheckTime);
+            this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate}), healthFactor: ${healthFactor}`);
+            activeLoansMap.set(user, {
+                nextCheckTime: nextCheckTime,
+                healthFactor: healthFactor
+            });
+            await this.databaseService.updateLoanHealthFactor(chainName, user, healthFactor, nextCheckTime);
         }
     }
     async getUserAccountDataBatch(chainName, contract, users) {
@@ -435,15 +441,16 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
     calculateHealthFactor(healthFactor) {
         return Number(healthFactor) / 1e18;
     }
-    calculateWaitTime(healthFactor) {
+    calculateWaitTime(chainName, healthFactor) {
+        const minWaitTime = this.chainService.getChainConfig(chainName).minWaitTime;
         if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
-            return this.MIN_WAIT_TIME;
+            return minWaitTime;
         }
         if (healthFactor <= this.CRITICAL_THRESHOLD) {
-            return this.MIN_WAIT_TIME * 2;
+            return minWaitTime * 2;
         }
         if (healthFactor <= this.HEALTH_FACTOR_THRESHOLD) {
-            const baseTime = this.MIN_WAIT_TIME * 4;
+            const baseTime = minWaitTime * 4;
             const maxTime = this.MAX_WAIT_TIME / 2;
             const factor = (healthFactor - this.CRITICAL_THRESHOLD) /
                 (this.HEALTH_FACTOR_THRESHOLD - this.CRITICAL_THRESHOLD);
@@ -534,25 +541,28 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                 this.logger.log(`[${chainName}] No collateral assets found for user ${user}`);
                 return;
             }
+            const collateralTokenInfo = await this.getTokenInfo(chainName, maxCollateralAsset);
+            const debtTokenInfo = await this.getTokenInfo(chainName, maxDebtAsset);
             this.logger.log(`[${chainName}] Executing flash loan liquidation:`);
             this.logger.log(`- User: ${user}`);
             this.logger.log(`- Health Factor: ${healthFactor}`);
-            this.logger.log(`- Collateral Asset: ${maxCollateralAsset} (${maxCollateralAmount})`);
-            this.logger.log(`- Debt Asset: ${maxDebtAsset} (${maxDebtAmount})`);
+            this.logger.log(`- Collateral Asset: ${maxCollateralAsset} (${(Number(maxCollateralAmount) / Number(10 ** collateralTokenInfo.decimals)).toFixed(6)} ${collateralTokenInfo.symbol})`);
+            this.logger.log(`- Debt Asset: ${maxDebtAsset} (${(Number(maxDebtAmount) / Number(10 ** debtTokenInfo.decimals)).toFixed(6)} ${debtTokenInfo.symbol})`);
             const flashLoanLiquidation = await this.getFlashLoanLiquidation(chainName);
             try {
                 const gasPrice = await flashLoanLiquidation.runner.provider.getFeeData();
-                const maxFeePerGas = gasPrice.maxFeePerGas ? gasPrice.maxFeePerGas * BigInt(15) / BigInt(10) : undefined;
                 const maxPriorityFeePerGas = gasPrice.maxPriorityFeePerGas ? gasPrice.maxPriorityFeePerGas * BigInt(15) / BigInt(10) : undefined;
+                const maxFeePerGas = gasPrice.maxFeePerGas ? gasPrice.maxFeePerGas + (maxPriorityFeePerGas || BigInt(0)) : undefined;
+                this.logger.log(`[${chainName}] gasPrice: ${gasPrice.gasPrice}, maxFeePerGas: ${maxFeePerGas}, maxPriorityFeePerGas: ${maxPriorityFeePerGas}`);
                 const tx = await flashLoanLiquidation.executeLiquidation(maxCollateralAsset, maxDebtAsset, user, {
                     maxFeePerGas,
-                    maxPriorityFeePerGas
+                    maxPriorityFeePerGas,
                 });
                 this.logger.log(`[${chainName}] Flash loan liquidation executed successfully, tx: ${tx.hash}`);
                 await tx.wait();
             }
             catch (error) {
-                this.logger.error(`[${chainName}] Error executing flash loan liquidation: ${error.message}`);
+                this.logger.error(`[${chainName}] Error executing flash loan liquidation for user ${user}: ${error.message}`);
             }
         }
         catch (error) {

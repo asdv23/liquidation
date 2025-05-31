@@ -212,6 +212,30 @@ pm2 status
 
 # 查看日志
 pm2 logs bot
+
+## 日志轮转
+pm2 install pm2-logrotate
+
+# 设置最大日志大小为 50MB
+pm2 set pm2-logrotate:max_size 100M
+
+# 保留最近 10 个轮转日志文件
+pm2 set pm2-logrotate:retain 10
+
+# 启用日志压缩
+pm2 set pm2-logrotate:compress true
+
+# 设置日志文件名时间格式为 YYYY-MM-DD
+pm2 set pm2-logrotate:dateFormat YYYY-MM-DD
+
+# 设置每天凌晨 2 点轮转
+pm2 set pm2-logrotate:rotateInterval '0 2 * * *'
+
+# 设置检查日志大小的频率为 60 秒
+pm2 set pm2-logrotate:workerInterval 60
+
+# 设置时区为 Asia/Shanghai（中国时区，视需求调整）
+pm2 set pm2-logrotate:TZ Asia/Shanghai
 ```
 
 ### 5. 服务管理

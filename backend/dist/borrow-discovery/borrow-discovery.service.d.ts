@@ -15,9 +15,9 @@ export declare class BorrowDiscoveryService implements OnModuleInit, OnModuleDes
     private readonly HEALTH_FACTOR_THRESHOLD;
     private readonly MIN_WAIT_TIME;
     private readonly MAX_WAIT_TIME;
-    private readonly CHAIN_CHECK_TIMEOUT;
+    private readonly BATCH_CHECK_TIMEOUT;
     private readonly PRIVATE_KEY;
-    private checkInterval;
+    private readonly MIN_DEBT;
     private abiCache;
     constructor(chainService: ChainService, configService: ConfigService, databaseService: DatabaseService);
     onModuleInit(): Promise<void>;
@@ -40,6 +40,7 @@ export declare class BorrowDiscoveryService implements OnModuleInit, OnModuleDes
     private startHealthFactorChecker;
     private formatDate;
     private checkHealthFactorsBatch;
+    private processBatch;
     private getUserAccountDataBatch;
     private calculateHealthFactor;
     private calculateWaitTime;

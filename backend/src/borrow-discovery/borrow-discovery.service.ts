@@ -31,15 +31,15 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
     private readonly logger = new Logger(BorrowDiscoveryService.name);
     private activeLoans: Map<string, Map<string, LoanInfo>> = new Map();
     private tokenCache: Map<string, Map<string, TokenInfo>> = new Map();
-    private lastLiquidationAttempt: Map<string, Map<string, number>> = new Map(); // 新增：记录上次清算尝试的健康因子
-    private readonly LIQUIDATION_THRESHOLD = 1.00001; // 清算阈值
-    private readonly CRITICAL_THRESHOLD = 1.001; // 危险阈值
+    private lastLiquidationAttempt: Map<string, Map<string, { healthFactor: number, retryCount: number }>> = new Map(); // 新增：记录上次清算尝试的健康因子
+    private readonly LIQUIDATION_THRESHOLD = 1.005; // 清算阈值
+    private readonly CRITICAL_THRESHOLD = 1.01; // 危险阈值
     private readonly HEALTH_FACTOR_THRESHOLD = 1.1; // 健康阈值
     private readonly MIN_WAIT_TIME: number; // 最小等待时间（毫秒）
     private readonly MAX_WAIT_TIME: number; // 最大等待时间（毫秒）
-    private readonly CHAIN_CHECK_TIMEOUT: number; // 链检查超时时间（毫秒）
+    private readonly BATCH_CHECK_TIMEOUT: number; // 批次检查超时时间（毫秒）
     private readonly PRIVATE_KEY: string; // EOA 私钥
-    private checkInterval: NodeJS.Timeout;
+    private readonly MIN_DEBT: number = 5; // 最小债务
     private abiCache: Map<string, any> = new Map(); // 新增：ABI 缓存
 
     constructor(
@@ -48,9 +48,9 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         private readonly databaseService: DatabaseService,
     ) {
         // 从环境变量读取配置，默认值：最小1s，最大4小时
-        this.MIN_WAIT_TIME = this.configService.get<number>('MIN_CHECK_INTERVAL', 1000);
+        this.MIN_WAIT_TIME = this.configService.get<number>('MIN_CHECK_INTERVAL', 200);
         this.MAX_WAIT_TIME = this.configService.get<number>('MAX_CHECK_INTERVAL', 4 * 60 * 60 * 1000);
-        this.CHAIN_CHECK_TIMEOUT = this.configService.get<number>('CHAIN_CHECK_TIMEOUT', 5000); // 默认5秒
+        this.BATCH_CHECK_TIMEOUT = this.configService.get<number>('BATCH_CHECK_TIMEOUT', 5000); // 默认5秒
         this.PRIVATE_KEY = this.configService.get<string>('PRIVATE_KEY');
     }
 
@@ -65,10 +65,6 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
 
     async onModuleDestroy() {
         this.logger.log('BorrowDiscoveryService destroying...');
-        if (this.checkInterval) {
-            this.logger.log('Clearing check interval');
-            clearInterval(this.checkInterval);
-        }
     }
 
     private async initializeAbis() {
@@ -315,6 +311,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             debtToCover: bigint, liquidatedCollateralAmount: bigint, liquidator: string,
             receiveAToken: boolean, event: any) => {
             try {
+                user = user.toLowerCase();
                 const [collateralInfo, debtInfo] = await Promise.all([
                     this.getTokenInfo(chainName, collateralAsset, provider),
                     this.getTokenInfo(chainName, debtAsset, provider),
@@ -407,33 +404,20 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
 
             isChecking = true;
             try {
-                // 并发执行所有链的检查，添加超时控制
+                // 并发执行所有链的检查
                 const chains = Array.from(this.activeLoans.keys());
-                await Promise.all(chains.map(async (chainName) => {
-                    try {
-                        await Promise.race([
-                            this.checkHealthFactorsBatch(chainName),
-                            new Promise((_, reject) =>
-                                setTimeout(() => reject(new Error(`Chain ${chainName} check timeout after ${this.CHAIN_CHECK_TIMEOUT}ms`)),
-                                    this.CHAIN_CHECK_TIMEOUT)
-                            )
-                        ]);
-                    } catch (error) {
-                        this.logger.error(`[${chainName}] Error in chain check: ${error.message}`);
-                    }
-                }));
+                await Promise.all(chains.map(chainName => this.checkHealthFactorsBatch(chainName)));
             } catch (error) {
                 this.logger.error(`Error in health factor checker: ${error.message}`);
             } finally {
                 isChecking = false;
+                // 在完成检查后调度下一次检查
+                setTimeout(checkAllLoans, this.MIN_WAIT_TIME);
             }
         };
 
         // 立即执行一次检查
         checkAllLoans();
-
-        // 设置定时器，每最小检查间隔执行一次
-        this.checkInterval = setInterval(checkAllLoans, this.MIN_WAIT_TIME);
     }
 
     private formatDate(date: Date): string {
@@ -455,7 +439,6 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             if (!this.lastLiquidationAttempt.has(chainName)) {
                 this.lastLiquidationAttempt.set(chainName, new Map());
             }
-            const lastLiquidationMap = this.lastLiquidationAttempt.get(chainName)!;
 
             const usersToCheck = Array.from(activeLoansMap.entries())
                 .filter(([_, info]) => info.nextCheckTime <= new Date())
@@ -469,69 +452,99 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 const batchUsers = usersToCheck.slice(i, i + BATCH_SIZE);
                 this.logger.log(`[${chainName}] Checking health factors for batch ${i / BATCH_SIZE + 1}/${Math.ceil(usersToCheck.length / BATCH_SIZE)} (${batchUsers.length}/${activeLoansMap.size} users)...`);
 
-                const aaveV3Pool = await this.getAaveV3Pool(chainName);
-                const accountDataMap = await this.getUserAccountDataBatch(chainName, aaveV3Pool, batchUsers);
-
-                for (const user of batchUsers) {
-                    const accountData = accountDataMap.get(user);
-                    if (!accountData) continue;
-
-                    const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
-                    const totalDebt = Number(ethers.formatUnits(accountData.totalDebtBase, 8));
-
-                    // 如果总债务小于 1 USD，则从内存和数据库中移除该用户
-                    if (totalDebt < 1) {
-                        activeLoansMap.delete(user);
-                        lastLiquidationMap.delete(user); // 清理清算记录
-                        await this.databaseService.deactivateLoan(chainName, user);
-                        this.logger.log(`[${chainName}] Removed user ${user} from active loans and database as total debt is less than 1 USD`);
-                        continue;
-                    }
-
-                    // 如果健康因子低于清算阈值，尝试清算
-                    if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
-                        const lastAttemptHealthFactor = lastLiquidationMap.get(user);
-
-                        // 如果是首次尝试清算，或者新的健康因子比上次更低，则执行清算
-                        if (lastAttemptHealthFactor === undefined || healthFactor < lastAttemptHealthFactor) {
-                            this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}, attempting liquidation`);
-                            // 记录此次清算尝试的健康因子
-                            lastLiquidationMap.set(user, healthFactor);
-                            await this.executeLiquidation(chainName, user, healthFactor, aaveV3Pool);
-                        } else {
-                            this.logger.log(`[${chainName}] Skipping liquidation for user ${user} as current health factor ${healthFactor} is not lower than last attempt ${lastAttemptHealthFactor}`);
-                        }
-                        continue;
-                    }
-
-                    // 如果健康因子高于清算阈值，清除清算记录
-                    if (lastLiquidationMap.has(user)) {
-                        lastLiquidationMap.delete(user);
-                    }
-
-                    // 更新下次检查时间
-                    const waitTime = this.calculateWaitTime(healthFactor);
-                    const nextCheckTime = new Date(Date.now() + waitTime);
-                    const formattedDate = this.formatDate(nextCheckTime);
-                    this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate}), healthFactor: ${healthFactor}`);
-
-                    // 更新内存中的健康因子和下次检查时间
-                    activeLoansMap.set(user, {
-                        nextCheckTime: nextCheckTime,
-                        healthFactor: healthFactor
-                    });
-
-                    // 更新数据库中的健康因子和下次检查时间
-                    await this.databaseService.updateLoanHealthFactor(
-                        chainName,
-                        user,
-                        healthFactor,
-                        nextCheckTime
-                    );
+                try {
+                    // 为每个批次添加超时控制
+                    await Promise.race([
+                        this.processBatch(chainName, batchUsers, activeLoansMap),
+                        new Promise((_, reject) =>
+                            setTimeout(() => reject(new Error(`Batch check timeout after ${this.BATCH_CHECK_TIMEOUT}ms`)),
+                                this.BATCH_CHECK_TIMEOUT)
+                        )
+                    ]);
+                } catch (error) {
+                    this.logger.error(`[${chainName}] Error processing batch: ${error.message}`);
+                    // 继续处理下一批
+                    continue;
                 }
             }
         } catch (error) {
             this.logger.error(`[${chainName}] Error checking health factors batch: ${error.message}`);
+        }
+    }
+
+    private async processBatch(
+        chainName: string,
+        batchUsers: string[],
+        activeLoansMap: Map<string, LoanInfo>,
+    ) {
+        const aaveV3Pool = await this.getAaveV3Pool(chainName);
+        const accountDataMap = await this.getUserAccountDataBatch(chainName, aaveV3Pool, batchUsers);
+        const lastLiquidationMap = this.lastLiquidationAttempt.get(chainName)!;
+
+        for (const user of batchUsers) {
+            const accountData = accountDataMap.get(user);
+            if (!accountData) continue;
+
+            const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
+            const totalDebt = Number(ethers.formatUnits(accountData.totalDebtBase, 8));
+
+            // 如果总债务小于 this.MIN_DEBT USD，则从内存和数据库中移除该用户
+            if (totalDebt < this.MIN_DEBT) {
+                activeLoansMap.delete(user);
+                lastLiquidationMap.delete(user); // 清理清算记录
+                await this.databaseService.deactivateLoan(chainName, user);
+                this.logger.log(`[${chainName}] Removed user ${user} from active loans and database as total debt is less than ${this.MIN_DEBT} USD`);
+                continue;
+            }
+
+            // 如果健康因子低于清算阈值，尝试清算
+            if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
+                const lastAttemptHealthFactor = lastLiquidationMap.get(user);
+
+                // 如果是首次尝试清算，或者新的健康因子比上次更低，则执行清算
+                if (lastAttemptHealthFactor === undefined || healthFactor < lastAttemptHealthFactor.healthFactor) {
+                    this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}, attempting liquidation`);
+                    // 记录此次清算尝试的健康因子
+                    lastLiquidationMap.set(user, { healthFactor: healthFactor, retryCount: lastAttemptHealthFactor?.retryCount + 1 || 1 });
+                    await this.executeLiquidation(chainName, user, healthFactor, aaveV3Pool);
+                } else {
+                    this.logger.log(`[${chainName}] Skipping liquidation for user ${user} as current health factor ${healthFactor} is not lower than last attempt ${lastAttemptHealthFactor.healthFactor}, retry count ${lastAttemptHealthFactor.retryCount}`);
+                }
+
+                if (lastAttemptHealthFactor?.retryCount >= 3) {
+                    this.logger.log(`[${chainName}] Skipping liquidation for user ${user} as retry count ${lastAttemptHealthFactor.retryCount} >= 3`);
+                    lastLiquidationMap.delete(user);
+                    await this.databaseService.deactivateLoan(chainName, user);
+                    this.logger.log(`[${chainName}] Removed user ${user} from active loans and database as retry count >= 3`);
+                }
+
+                continue;
+            }
+
+            // 如果健康因子高于清算阈值，清除清算记录
+            if (lastLiquidationMap.has(user)) {
+                lastLiquidationMap.delete(user);
+            }
+
+            // 更新下次检查时间
+            const waitTime = this.calculateWaitTime(chainName, healthFactor);
+            const nextCheckTime = new Date(Date.now() + waitTime);
+            const formattedDate = this.formatDate(nextCheckTime);
+            this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate}), healthFactor: ${healthFactor}`);
+
+            // 更新内存中的健康因子和下次检查时间
+            activeLoansMap.set(user, {
+                nextCheckTime: nextCheckTime,
+                healthFactor: healthFactor
+            });
+
+            // 更新数据库中的健康因子和下次检查时间
+            await this.databaseService.updateLoanHealthFactor(
+                chainName,
+                user,
+                healthFactor,
+                nextCheckTime
+            );
         }
     }
 
@@ -574,21 +587,23 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         return Number(healthFactor) / 1e18;
     }
 
-    private calculateWaitTime(healthFactor: number): number {
+    private calculateWaitTime(chainName: string, healthFactor: number): number {
+        const minWaitTime = this.chainService.getChainConfig(chainName).minWaitTime;
+
         // 如果健康因子低于清算阈值，使用最小检查间隔
         if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
-            return this.MIN_WAIT_TIME;
+            return minWaitTime;
         }
 
         // 如果健康因子低于危险阈值，使用较短检查间隔
         if (healthFactor <= this.CRITICAL_THRESHOLD) {
-            return this.MIN_WAIT_TIME * 2; // 400ms
+            return minWaitTime * 2;
         }
 
         // 如果健康因子低于健康阈值，使用中等检查间隔
         if (healthFactor <= this.HEALTH_FACTOR_THRESHOLD) {
             // 使用指数函数计算等待时间，健康因子越接近阈值，等待时间越短
-            const baseTime = this.MIN_WAIT_TIME * 4; // 800ms
+            const baseTime = minWaitTime * 4;
             const maxTime = this.MAX_WAIT_TIME / 2; // 15分钟
             const factor = (healthFactor - this.CRITICAL_THRESHOLD) /
                 (this.HEALTH_FACTOR_THRESHOLD - this.CRITICAL_THRESHOLD);
@@ -717,11 +732,13 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 this.logger.log(`[${chainName}] No collateral assets found for user ${user}`);
                 return;
             }
+            const collateralTokenInfo = await this.getTokenInfo(chainName, maxCollateralAsset);
+            const debtTokenInfo = await this.getTokenInfo(chainName, maxDebtAsset);
             this.logger.log(`[${chainName}] Executing flash loan liquidation:`);
             this.logger.log(`- User: ${user}`);
             this.logger.log(`- Health Factor: ${healthFactor}`);
-            this.logger.log(`- Collateral Asset: ${maxCollateralAsset} (${maxCollateralAmount})`);
-            this.logger.log(`- Debt Asset: ${maxDebtAsset} (${maxDebtAmount})`);
+            this.logger.log(`- Collateral Asset: ${maxCollateralAsset} (${(Number(maxCollateralAmount) / Number(10 ** collateralTokenInfo.decimals)).toFixed(6)} ${collateralTokenInfo.symbol})`);
+            this.logger.log(`- Debt Asset: ${maxDebtAsset} (${(Number(maxDebtAmount) / Number(10 ** debtTokenInfo.decimals)).toFixed(6)} ${debtTokenInfo.symbol})`);
 
             // 4. 执行闪电贷清算
             const flashLoanLiquidation = await this.getFlashLoanLiquidation(chainName);
@@ -729,8 +746,9 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             try {
                 // 获取当前 gas 价格并提高 50%
                 const gasPrice = await flashLoanLiquidation.runner.provider.getFeeData();
-                const maxFeePerGas = gasPrice.maxFeePerGas ? gasPrice.maxFeePerGas * BigInt(15) / BigInt(10) : undefined;
                 const maxPriorityFeePerGas = gasPrice.maxPriorityFeePerGas ? gasPrice.maxPriorityFeePerGas * BigInt(15) / BigInt(10) : undefined;
+                const maxFeePerGas = gasPrice.maxFeePerGas ? gasPrice.maxFeePerGas + (maxPriorityFeePerGas || BigInt(0)) : undefined;
+                this.logger.log(`[${chainName}] gasPrice: ${gasPrice.gasPrice}, maxFeePerGas: ${maxFeePerGas}, maxPriorityFeePerGas: ${maxPriorityFeePerGas}`);
 
                 const tx = await flashLoanLiquidation.executeLiquidation(
                     maxCollateralAsset,
@@ -738,13 +756,14 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                     user,
                     {
                         maxFeePerGas,
-                        maxPriorityFeePerGas
+                        maxPriorityFeePerGas,
                     }
                 );
+
                 this.logger.log(`[${chainName}] Flash loan liquidation executed successfully, tx: ${tx.hash}`);
                 await tx.wait();
             } catch (error) {
-                this.logger.error(`[${chainName}] Error executing flash loan liquidation: ${error.message}`);
+                this.logger.error(`[${chainName}] Error executing flash loan liquidation for user ${user}: ${error.message}`);
             }
         } catch (error) {
             this.logger.error(`[${chainName}] Error executing liquidation for user ${user}: ${error.message}`);
