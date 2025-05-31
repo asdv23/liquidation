@@ -511,13 +511,6 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                     this.logger.log(`[${chainName}] Skipping liquidation for user ${user} as current health factor ${healthFactor} is not lower than last attempt ${lastAttemptHealthFactor.healthFactor}, retry count ${lastAttemptHealthFactor.retryCount}`);
                 }
 
-                if (lastAttemptHealthFactor?.retryCount >= 3) {
-                    this.logger.log(`[${chainName}] Skipping liquidation for user ${user} as retry count ${lastAttemptHealthFactor.retryCount} >= 3`);
-                    lastLiquidationMap.delete(user);
-                    await this.databaseService.deactivateLoan(chainName, user);
-                    this.logger.log(`[${chainName}] Removed user ${user} from active loans and database as retry count >= 3`);
-                }
-
                 continue;
             }
 

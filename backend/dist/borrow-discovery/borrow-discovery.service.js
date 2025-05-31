@@ -389,12 +389,6 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                 else {
                     this.logger.log(`[${chainName}] Skipping liquidation for user ${user} as current health factor ${healthFactor} is not lower than last attempt ${lastAttemptHealthFactor.healthFactor}, retry count ${lastAttemptHealthFactor.retryCount}`);
                 }
-                if ((lastAttemptHealthFactor === null || lastAttemptHealthFactor === void 0 ? void 0 : lastAttemptHealthFactor.retryCount) >= 3) {
-                    this.logger.log(`[${chainName}] Skipping liquidation for user ${user} as retry count ${lastAttemptHealthFactor.retryCount} >= 3`);
-                    lastLiquidationMap.delete(user);
-                    await this.databaseService.deactivateLoan(chainName, user);
-                    this.logger.log(`[${chainName}] Removed user ${user} from active loans and database as retry count >= 3`);
-                }
                 continue;
             }
             if (lastLiquidationMap.has(user)) {
