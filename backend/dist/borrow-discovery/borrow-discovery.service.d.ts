@@ -9,13 +9,14 @@ export declare class BorrowDiscoveryService implements OnModuleInit, OnModuleDes
     private readonly logger;
     private activeLoans;
     private tokenCache;
-    private lastLiquidationAttempt;
+    private liquidationInfoCache;
     private readonly LIQUIDATION_THRESHOLD;
     private readonly HEALTH_FACTOR_THRESHOLD;
     private readonly MIN_WAIT_TIME;
     private readonly MAX_WAIT_TIME;
     private readonly BATCH_CHECK_TIMEOUT;
     private readonly MIN_DEBT;
+    private readonly CACHE_TTL;
     private abiCache;
     constructor(chainService: ChainService, configService: ConfigService, databaseService: DatabaseService);
     onModuleInit(): Promise<void>;
@@ -43,5 +44,6 @@ export declare class BorrowDiscoveryService implements OnModuleInit, OnModuleDes
     private getUserAccountDataBatch;
     private calculateHealthFactor;
     private calculateWaitTime;
+    private getLiquidationInfo;
     private executeLiquidation;
 }

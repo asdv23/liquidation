@@ -5,38 +5,21 @@ import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '../database/database.service';
 import * as fs from 'fs';
 import * as path from 'path';
-
-interface UserAccountData {
-    totalCollateralBase: bigint;
-    totalDebtBase: bigint;
-    availableBorrowsBase: bigint;
-    currentLiquidationThreshold: bigint;
-    ltv: bigint;
-    healthFactor: bigint;
-}
-
-interface TokenInfo {
-    symbol: string;
-    decimals: number;
-}
-
-interface LoanInfo {
-    nextCheckTime: Date;
-    healthFactor: number;
-}
+import { UserAccountData, TokenInfo, LoanInfo, LiquidationInfo } from './interfaces';
 
 @Injectable()
 export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
     private readonly logger = new Logger(BorrowDiscoveryService.name);
     private activeLoans: Map<string, Map<string, LoanInfo>> = new Map();
     private tokenCache: Map<string, Map<string, TokenInfo>> = new Map();
-    private lastLiquidationAttempt: Map<string, Map<string, { healthFactor: number, retryCount: number }>> = new Map(); // 新增：记录上次清算尝试的健康因子
+    private liquidationInfoCache: Map<string, LiquidationInfo> = new Map();
     private readonly LIQUIDATION_THRESHOLD = 1.0005; // 清算阈值
     private readonly HEALTH_FACTOR_THRESHOLD = 2; // 健康阈值
     private readonly MIN_WAIT_TIME: number; // 最小等待时间（毫秒）
     private readonly MAX_WAIT_TIME: number; // 最大等待时间（毫秒）
     private readonly BATCH_CHECK_TIMEOUT: number; // 批次检查超时时间（毫秒）
     private readonly MIN_DEBT: number = 5; // 最小债务
+    private readonly CACHE_TTL = 30000; // 30 seconds in milliseconds
     private abiCache: Map<string, any> = new Map(); // 新增：ABI 缓存
 
     constructor(
@@ -462,18 +445,14 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         const hours = String(date.getHours()).padStart(2, '0');
         const minutes = String(date.getMinutes()).padStart(2, '0');
         const seconds = String(date.getSeconds()).padStart(2, '0');
-        return `${year}/${month}/${day} ${hours}:${minutes}:${seconds}`;
+        const milliseconds = String(date.getMilliseconds()).padStart(3, '0');
+        return `${year}/${month}/${day} ${hours}:${minutes}:${seconds}.${milliseconds}`;
     }
 
     private async checkHealthFactorsBatch(chainName: string) {
         try {
             const activeLoansMap = this.activeLoans.get(chainName);
             if (!activeLoansMap || activeLoansMap.size === 0) return;
-
-            // 初始化链的清算尝试记录
-            if (!this.lastLiquidationAttempt.has(chainName)) {
-                this.lastLiquidationAttempt.set(chainName, new Map());
-            }
 
             const usersToCheck = Array.from(activeLoansMap.entries())
                 .filter(([_, info]) => info.nextCheckTime <= new Date())
@@ -520,7 +499,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
     ) {
         const aaveV3Pool = await this.getAaveV3Pool(chainName);
         const accountDataMap = await this.getUserAccountDataBatch(chainName, aaveV3Pool, batchUsers);
-        const lastLiquidationMap = this.lastLiquidationAttempt.get(chainName)!;
+        const lastLiquidationMap = this.liquidationInfoCache.get(chainName)!;
 
         // 并发处理每个用户
         await Promise.all(batchUsers.map(async (user) => {
@@ -532,7 +511,6 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 user,
                 accountData,
                 activeLoansMap,
-                lastLiquidationMap,
                 aaveV3Pool
             );
         }));
@@ -543,7 +521,6 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         user: string,
         accountData: UserAccountData,
         activeLoansMap: Map<string, LoanInfo>,
-        lastLiquidationMap: Map<string, { healthFactor: number, retryCount: number }>,
         aaveV3Pool: ethers.Contract
     ) {
         const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
@@ -552,7 +529,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         // 如果总债务小于 this.MIN_DEBT USD，则从内存和数据库中移除该用户
         if (totalDebt < this.MIN_DEBT) {
             activeLoansMap.delete(user);
-            lastLiquidationMap.delete(user); // 清理清算记录
+            this.liquidationInfoCache.delete(`${chainName}-${user}`); // 清理清算记录
             await this.databaseService.deactivateLoan(chainName, user);
             this.logger.log(`[${chainName}] Removed user ${user} from active loans and database as total debt is less than ${this.MIN_DEBT} USD`);
             return;
@@ -560,24 +537,21 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
 
         // 如果健康因子低于清算阈值，尝试清算
         if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
-            const lastAttemptHealthFactor = lastLiquidationMap.get(user);
+            const cacheKey = `${chainName}-${user}`;
+            const cachedInfo = this.liquidationInfoCache.get(cacheKey);
 
             // 如果是首次尝试清算，或者新的健康因子比上次更低，则执行清算
-            if (lastAttemptHealthFactor === undefined || healthFactor < lastAttemptHealthFactor.healthFactor) {
+            if (!cachedInfo || healthFactor < cachedInfo.healthFactor) {
                 this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}, attempting liquidation`);
-                // 记录此次清算尝试的健康因子
-                lastLiquidationMap.set(user, { healthFactor: healthFactor, retryCount: lastAttemptHealthFactor?.retryCount + 1 || 1 });
                 await this.executeLiquidation(chainName, user, healthFactor, aaveV3Pool);
             } else {
-                this.logger.log(`[${chainName}] Skip liquidation for ${user} as health factor ${healthFactor} >= ${lastAttemptHealthFactor.healthFactor}, retry ${lastAttemptHealthFactor.retryCount}`);
+                this.logger.log(`[${chainName}] Skip liquidation for ${user} as health factor ${healthFactor} >= ${cachedInfo.healthFactor}, retry ${cachedInfo.retryCount}`);
             }
             return;
         }
 
         // 如果健康因子高于清算阈值，清除清算记录
-        if (lastLiquidationMap.has(user)) {
-            lastLiquidationMap.delete(user);
-        }
+        this.liquidationInfoCache.delete(`${chainName}-${user}`);
 
         // 更新下次检查时间
         const waitTime = this.calculateWaitTime(chainName, healthFactor);
@@ -650,13 +624,21 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
             return c1;
         } else if (healthFactor <= this.HEALTH_FACTOR_THRESHOLD) {
-            return c1 + (c2 - c1) / (1 + Math.exp(-k * (healthFactor - x0)));
+            return Math.floor(c1 + (c2 - c1) / (1 + Math.exp(-k * (healthFactor - x0))));
         } else {
             return c2;
         }
     }
 
-    private async executeLiquidation(chainName: string, user: string, healthFactor: number, aaveV3Pool: ethers.Contract) {
+    private async getLiquidationInfo(chainName: string, user: string, healthFactor: number, aaveV3Pool: ethers.Contract): Promise<LiquidationInfo | null> {
+        const cacheKey = `${chainName}-${user}`;
+        const cachedInfo = this.liquidationInfoCache.get(cacheKey);
+
+        if (cachedInfo && Date.now() - cachedInfo.timestamp < this.CACHE_TTL) {
+            this.logger.log(`[${chainName}] Using cached liquidation info for user ${user}`);
+            return cachedInfo;
+        }
+
         try {
             // 1. 使用 multicall 批量获取用户配置和储备资产列表
             const multicall = await this.getMulticall(chainName);
@@ -705,7 +687,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
 
             if (reserveCalls.length === 0) {
                 this.logger.log(`[${chainName}] No borrowing or collateral assets found for user ${user}`);
-                return;
+                return null;
             }
 
             // 执行批量查询
@@ -752,15 +734,37 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 }
             }
 
-            // 3. 对最大债务资产执行清算
-            if (maxDebtAmount === BigInt(0)) {
-                this.logger.log(`[${chainName}] No debt found for user ${user}`);
+            if (maxDebtAmount === BigInt(0) || maxCollateralAmount === BigInt(0)) {
+                return null;
+            }
+
+            const liquidationInfo: LiquidationInfo = {
+                maxDebtAsset,
+                maxDebtAmount,
+                maxCollateralAsset,
+                maxCollateralAmount,
+                user,
+                healthFactor,
+                timestamp: Date.now(),
+                retryCount: (cachedInfo?.retryCount || 0) + 1
+            };
+
+            this.liquidationInfoCache.set(cacheKey, liquidationInfo);
+            return liquidationInfo;
+        } catch (error) {
+            this.logger.error(`[${chainName}] Error getting liquidation info for user ${user}: ${error.message}`);
+            return null;
+        }
+    }
+
+    private async executeLiquidation(chainName: string, user: string, healthFactor: number, aaveV3Pool: ethers.Contract) {
+        try {
+            const liquidationInfo = await this.getLiquidationInfo(chainName, user, healthFactor, aaveV3Pool);
+            if (!liquidationInfo) {
                 return;
             }
-            if (maxCollateralAmount === BigInt(0)) {
-                this.logger.log(`[${chainName}] No collateral assets found for user ${user}`);
-                return;
-            }
+
+            const { maxDebtAsset, maxDebtAmount, maxCollateralAsset, maxCollateralAmount } = liquidationInfo;
 
             const collateralTokenInfo = await this.getTokenInfo(chainName, maxCollateralAsset);
             const debtTokenInfo = await this.getTokenInfo(chainName, maxDebtAsset);
@@ -770,7 +774,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             this.logger.log(`- Collateral Asset: ${maxCollateralAsset} (${(Number(maxCollateralAmount) / Number(10 ** collateralTokenInfo.decimals)).toFixed(6)} ${collateralTokenInfo.symbol})`);
             this.logger.log(`- Debt Asset: ${maxDebtAsset} (${(Number(maxDebtAmount) / Number(10 ** debtTokenInfo.decimals)).toFixed(6)} ${debtTokenInfo.symbol})`);
 
-            // 4. 执行闪电贷清算
+            // 执行闪电贷清算
             const flashLoanLiquidation = await this.getFlashLoanLiquidation(chainName);
 
             try {
@@ -792,8 +796,12 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
 
                 this.logger.log(`[${chainName}] Flash loan liquidation executed successfully, tx: ${tx.hash}`);
                 await tx.wait();
+
+                // 清算成功后清除缓存
+                this.liquidationInfoCache.delete(`${chainName}-${user}`);
             } catch (error) {
                 this.logger.error(`[${chainName}] Error executing flash loan liquidation for user ${user}: ${error.message}`);
+                // 清算失败时保留缓存，下次可以直接使用
             }
         } catch (error) {
             this.logger.error(`[${chainName}] Error executing liquidation for user ${user}: ${error.message}`);

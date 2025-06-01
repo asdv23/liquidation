@@ -26,10 +26,11 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         this.logger = new common_1.Logger(BorrowDiscoveryService_1.name);
         this.activeLoans = new Map();
         this.tokenCache = new Map();
-        this.lastLiquidationAttempt = new Map();
+        this.liquidationInfoCache = new Map();
         this.LIQUIDATION_THRESHOLD = 1.0005;
         this.HEALTH_FACTOR_THRESHOLD = 2;
         this.MIN_DEBT = 5;
+        this.CACHE_TTL = 30000;
         this.abiCache = new Map();
         this.MIN_WAIT_TIME = this.configService.get('MIN_CHECK_INTERVAL', 200);
         this.MAX_WAIT_TIME = this.configService.get('MAX_CHECK_INTERVAL', 4 * 60 * 60 * 1000);
@@ -353,16 +354,14 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         const hours = String(date.getHours()).padStart(2, '0');
         const minutes = String(date.getMinutes()).padStart(2, '0');
         const seconds = String(date.getSeconds()).padStart(2, '0');
-        return `${year}/${month}/${day} ${hours}:${minutes}:${seconds}`;
+        const milliseconds = String(date.getMilliseconds()).padStart(3, '0');
+        return `${year}/${month}/${day} ${hours}:${minutes}:${seconds}.${milliseconds}`;
     }
     async checkHealthFactorsBatch(chainName) {
         try {
             const activeLoansMap = this.activeLoans.get(chainName);
             if (!activeLoansMap || activeLoansMap.size === 0)
                 return;
-            if (!this.lastLiquidationAttempt.has(chainName)) {
-                this.lastLiquidationAttempt.set(chainName, new Map());
-            }
             const usersToCheck = Array.from(activeLoansMap.entries())
                 .filter(([_, info]) => info.nextCheckTime <= new Date())
                 .map(([user]) => user);
@@ -396,39 +395,37 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
     async processBatch(chainName, batchUsers, activeLoansMap) {
         const aaveV3Pool = await this.getAaveV3Pool(chainName);
         const accountDataMap = await this.getUserAccountDataBatch(chainName, aaveV3Pool, batchUsers);
-        const lastLiquidationMap = this.lastLiquidationAttempt.get(chainName);
+        const lastLiquidationMap = this.liquidationInfoCache.get(chainName);
         await Promise.all(batchUsers.map(async (user) => {
             const accountData = accountDataMap.get(user);
             if (!accountData)
                 return;
-            await this.processUser(chainName, user, accountData, activeLoansMap, lastLiquidationMap, aaveV3Pool);
+            await this.processUser(chainName, user, accountData, activeLoansMap, aaveV3Pool);
         }));
     }
-    async processUser(chainName, user, accountData, activeLoansMap, lastLiquidationMap, aaveV3Pool) {
+    async processUser(chainName, user, accountData, activeLoansMap, aaveV3Pool) {
         const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
         const totalDebt = Number(ethers_1.ethers.formatUnits(accountData.totalDebtBase, 8));
         if (totalDebt < this.MIN_DEBT) {
             activeLoansMap.delete(user);
-            lastLiquidationMap.delete(user);
+            this.liquidationInfoCache.delete(`${chainName}-${user}`);
             await this.databaseService.deactivateLoan(chainName, user);
             this.logger.log(`[${chainName}] Removed user ${user} from active loans and database as total debt is less than ${this.MIN_DEBT} USD`);
             return;
         }
         if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
-            const lastAttemptHealthFactor = lastLiquidationMap.get(user);
-            if (lastAttemptHealthFactor === undefined || healthFactor < lastAttemptHealthFactor.healthFactor) {
+            const cacheKey = `${chainName}-${user}`;
+            const cachedInfo = this.liquidationInfoCache.get(cacheKey);
+            if (!cachedInfo || healthFactor < cachedInfo.healthFactor) {
                 this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}, attempting liquidation`);
-                lastLiquidationMap.set(user, { healthFactor: healthFactor, retryCount: (lastAttemptHealthFactor === null || lastAttemptHealthFactor === void 0 ? void 0 : lastAttemptHealthFactor.retryCount) + 1 || 1 });
                 await this.executeLiquidation(chainName, user, healthFactor, aaveV3Pool);
             }
             else {
-                this.logger.log(`[${chainName}] Skip liquidation for ${user} as health factor ${healthFactor} >= ${lastAttemptHealthFactor.healthFactor}, retry ${lastAttemptHealthFactor.retryCount}`);
+                this.logger.log(`[${chainName}] Skip liquidation for ${user} as health factor ${healthFactor} >= ${cachedInfo.healthFactor}, retry ${cachedInfo.retryCount}`);
             }
             return;
         }
-        if (lastLiquidationMap.has(user)) {
-            lastLiquidationMap.delete(user);
-        }
+        this.liquidationInfoCache.delete(`${chainName}-${user}`);
         const waitTime = this.calculateWaitTime(chainName, healthFactor);
         const nextCheckTime = new Date(Date.now() + waitTime);
         activeLoansMap.set(user, {
@@ -476,13 +473,19 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             return c1;
         }
         else if (healthFactor <= this.HEALTH_FACTOR_THRESHOLD) {
-            return c1 + (c2 - c1) / (1 + Math.exp(-k * (healthFactor - x0)));
+            return Math.floor(c1 + (c2 - c1) / (1 + Math.exp(-k * (healthFactor - x0))));
         }
         else {
             return c2;
         }
     }
-    async executeLiquidation(chainName, user, healthFactor, aaveV3Pool) {
+    async getLiquidationInfo(chainName, user, healthFactor, aaveV3Pool) {
+        const cacheKey = `${chainName}-${user}`;
+        const cachedInfo = this.liquidationInfoCache.get(cacheKey);
+        if (cachedInfo && Date.now() - cachedInfo.timestamp < this.CACHE_TTL) {
+            this.logger.log(`[${chainName}] Using cached liquidation info for user ${user}`);
+            return cachedInfo;
+        }
         try {
             const multicall = await this.getMulticall(chainName);
             const calls = [
@@ -519,7 +522,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             }
             if (reserveCalls.length === 0) {
                 this.logger.log(`[${chainName}] No borrowing or collateral assets found for user ${user}`);
-                return;
+                return null;
             }
             const [, reserveReturnData] = await multicall.aggregate.staticCall(reserveCalls);
             let maxDebtAsset = null;
@@ -552,14 +555,34 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                     }
                 }
             }
-            if (maxDebtAmount === BigInt(0)) {
-                this.logger.log(`[${chainName}] No debt found for user ${user}`);
+            if (maxDebtAmount === BigInt(0) || maxCollateralAmount === BigInt(0)) {
+                return null;
+            }
+            const liquidationInfo = {
+                maxDebtAsset,
+                maxDebtAmount,
+                maxCollateralAsset,
+                maxCollateralAmount,
+                user,
+                healthFactor,
+                timestamp: Date.now(),
+                retryCount: ((cachedInfo === null || cachedInfo === void 0 ? void 0 : cachedInfo.retryCount) || 0) + 1
+            };
+            this.liquidationInfoCache.set(cacheKey, liquidationInfo);
+            return liquidationInfo;
+        }
+        catch (error) {
+            this.logger.error(`[${chainName}] Error getting liquidation info for user ${user}: ${error.message}`);
+            return null;
+        }
+    }
+    async executeLiquidation(chainName, user, healthFactor, aaveV3Pool) {
+        try {
+            const liquidationInfo = await this.getLiquidationInfo(chainName, user, healthFactor, aaveV3Pool);
+            if (!liquidationInfo) {
                 return;
             }
-            if (maxCollateralAmount === BigInt(0)) {
-                this.logger.log(`[${chainName}] No collateral assets found for user ${user}`);
-                return;
-            }
+            const { maxDebtAsset, maxDebtAmount, maxCollateralAsset, maxCollateralAmount } = liquidationInfo;
             const collateralTokenInfo = await this.getTokenInfo(chainName, maxCollateralAsset);
             const debtTokenInfo = await this.getTokenInfo(chainName, maxDebtAsset);
             this.logger.log(`[${chainName}] 💰 Executing flash loan liquidation:`);
@@ -579,6 +602,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                 });
                 this.logger.log(`[${chainName}] Flash loan liquidation executed successfully, tx: ${tx.hash}`);
                 await tx.wait();
+                this.liquidationInfoCache.delete(`${chainName}-${user}`);
             }
             catch (error) {
                 this.logger.error(`[${chainName}] Error executing flash loan liquidation for user ${user}: ${error.message}`);
