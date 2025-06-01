@@ -32,6 +32,7 @@ LiquidationCall - height:30672598
 ```
 ### 2. fork base
 anvil --fork-url https://base-mainnet.g.alchemy.com/v2/0aoAtW5IQvhhwLgW4wFQFbW7eM4czhOb --fork-block-number 30672597 --port 8546
+cast send --value 1ether 0xFcc65cb843f0667883f3Ac805291511c76B0B5EF --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 
 #### 验证可以清算 - 查询链上健康因子
 ```
@@ -94,6 +95,9 @@ npm run start:dev
 
 cast call 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 "balanceOf(address)" 0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266
 cast call 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 "balanceOf(address)" 0xFcc65cb843f0667883f3Ac805291511c76B0B5EF
+<!-- base -->
+cast call 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 "balanceOf(address)" 0xFcc65cb843f0667883f3Ac805291511c76B0B5EF
+cast call 0x4200000000000000000000000000000000000006 "balanceOf(address)" 0xFcc65cb843f0667883f3Ac805291511c76B0B5EF
 cast send --value 1ether 0xFcc65cb843f0667883f3Ac805291511c76B0B5EF --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 --rpc-url http://localhost:8546
 ```
 

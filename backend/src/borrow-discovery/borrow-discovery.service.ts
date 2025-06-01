@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { ChainService } from '../chain/chain.service';
-import { ethers } from 'ethers';
+import { ethers, MaxUint256 } from 'ethers';
 import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '../database/database.service';
 import * as fs from 'fs';
@@ -533,6 +533,15 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
         const totalDebt = Number(ethers.formatUnits(accountData.totalDebtBase, 8));
 
+        // 如果总债务小于 minDebtUSD, 则从内存和数据库中移除该用户
+        if (totalDebt < this.chainService.getChainConfig(chainName).minDebtUSD) {
+            this.activeLoans.get(chainName)?.delete(user);
+            this.liquidationInfoCache.delete(`${chainName}-${user}`); // 清理清算记录
+            await this.databaseService.deactivateLoan(chainName, user);
+            this.logger.log(`[${chainName}] Removed user ${user} as total debt ${totalDebt} < ${this.chainService.getChainConfig(chainName).minDebtUSD} USD`);
+            return;
+        }
+
         // 如果健康因子低于清算阈值，尝试清算
         if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
             const cacheKey = `${chainName}-${user}`;
@@ -542,7 +551,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             // 如果是首次尝试清算，或者新的健康因子比上次更低，则执行清算
             if (!cachedInfo || healthFactor < cachedInfo.healthFactor) {
                 this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}, attempting liquidation`);
-                await this.executeLiquidation(chainName, user, healthFactor, aaveV3Pool, totalDebt);
+                await this.executeLiquidation(chainName, user, healthFactor, aaveV3Pool);
             } else {
                 this.logger.log(`[${chainName}] Skip liquidation for ${user} as health factor ${healthFactor} >= ${cachedInfo.healthFactor}, retry ${cachedInfo.retryCount}`);
             }
@@ -725,7 +734,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                     // 处理抵押品数据
                     if (isUsingAsCollateral) {
                         const collateralAmount = BigInt(userReserveData.currentATokenBalance);
-                        this.logger.log(`[${chainName}] ${user} collateralAmount: ${collateralAmount}, asset: ${asset}`);
+                        this.logger.log(`[${chainName}] ${user} Collateral: ${asset}, collateralAmount: ${collateralAmount}`);
                         if (collateralAmount > maxCollateralAmount) {
                             maxCollateralAmount = collateralAmount;
                             maxCollateralAsset = asset;
@@ -769,35 +778,48 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         }
     }
 
-    private async executeLiquidation(chainName: string, user: string, healthFactor: number, aaveV3Pool: ethers.Contract, totalDebt: number) {
+    private async executeLiquidation(chainName: string, user: string, healthFactor: number, aaveV3Pool: ethers.Contract) {
         try {
-            // 如果总债务小于 minDebtUSD, 则从内存和数据库中移除该用户
-            if (totalDebt < this.chainService.getChainConfig(chainName).minDebtUSD) {
-                this.activeLoans.get(chainName)?.delete(user);
-                this.liquidationInfoCache.delete(`${chainName}-${user}`); // 清理清算记录
-                await this.databaseService.deactivateLoan(chainName, user);
-                this.logger.log(`[${chainName}] Removed user ${user} from active loans and database as total debt is less than ${this.chainService.getChainConfig(chainName).minDebtUSD} USD`);
-                return;
-            }
-
             const liquidationInfo = await this.getLiquidationInfo(chainName, user, healthFactor, aaveV3Pool);
             if (!liquidationInfo) {
                 return;
             }
 
-            const { maxDebtAsset, maxDebtAmount, maxCollateralAsset, maxCollateralAmount, collateralTokenInfo, debtTokenInfo, debtPrice } = liquidationInfo;
+            const { maxDebtAsset, maxDebtAmount, maxCollateralAsset, maxCollateralAmount, collateralTokenInfo, debtTokenInfo, collateralPrice, debtPrice } = liquidationInfo;
+            const collateralFormatAmount = this.formatAmount(maxCollateralAmount, collateralTokenInfo.decimals);
+            const collateralUSDAmount = this.amountToUSD(maxCollateralAmount, collateralTokenInfo.decimals, collateralPrice);
+            const debtFormatAmount = this.formatAmount(maxDebtAmount, debtTokenInfo.decimals);
             const debtUSDAmount = this.amountToUSD(maxDebtAmount, debtTokenInfo.decimals, debtPrice);
+            let debtToCover = MaxUint256 // 可以全额清算时必须全额清算，否则 103 错误
+            let debtToCoverUSD = debtUSDAmount * (1 + 0.05);// 5% 奖励; 足额清算有奖励;
+            if (debtUSDAmount > collateralUSDAmount) {
+                debtToCoverUSD = collateralUSDAmount * (1 - 1 / 1000);
+                debtToCover = BigInt(this.USDToAmount(debtToCoverUSD, debtTokenInfo.decimals, debtPrice));
+                this.logger.log(`[${chainName}] partial liquidation, debtToCoverUSD: ${debtToCoverUSD}, collateralUSDAmount: ${collateralUSDAmount}`);
+                // TODO: 优化：如果没有完全清算债务 debt，那合约中也没必要借入完整的 debt，可以借入部分 debt 以节省利息
+            }
+            // 如果总债务小于 minDebtUSD, 则从内存和数据库中移除该用户
+            if (debtToCoverUSD < this.chainService.getChainConfig(chainName).minDebtUSD) {
+                this.activeLoans.get(chainName)?.delete(user);
+                this.liquidationInfoCache.delete(`${chainName}-${user}`); // 清理清算记录
+                await this.databaseService.deactivateLoan(chainName, user);
+                this.logger.log(`[${chainName}] Removed user ${user} as debtToCoverUSD: ${debtToCoverUSD} < ${this.chainService.getChainConfig(chainName).minDebtUSD} USD`);
+                return;
+            }
+
             this.logger.log(`[${chainName}] 💰 Executing flash loan liquidation with aggregator:`);
             this.logger.log(`- User: ${user}`);
             this.logger.log(`- Health Factor: ${healthFactor}`);
-            this.logger.log(`- Collateral Asset: ${maxCollateralAsset} (${this.formatAmount(maxCollateralAmount, collateralTokenInfo.decimals)} ${collateralTokenInfo.symbol})`);
-            this.logger.log(`- Debt Asset: ${maxDebtAsset} (${this.formatAmount(maxDebtAmount, debtTokenInfo.decimals)} ${debtTokenInfo.symbol})`);
-            this.logger.log(`- Debt Asset USD: ${debtUSDAmount.toFixed(6)}`);
+            this.logger.log(`- Collateral Asset: ${maxCollateralAsset} (${maxCollateralAmount} = ${collateralFormatAmount} ${collateralTokenInfo.symbol} ≈ ${collateralUSDAmount.toFixed(2)} USD)`);
+            this.logger.log(`- Debt Asset: ${maxDebtAsset} (${maxDebtAmount} = ${debtFormatAmount} ${debtTokenInfo.symbol} ≈ ${debtUSDAmount.toFixed(2)} USD)`);
+            this.logger.log(`- Debt To Cover: ${debtToCover} = ${this.formatAmount(debtToCover, debtTokenInfo.decimals)} ${debtTokenInfo.symbol} ≈ ${debtToCoverUSD.toFixed(2)} USD`);
+            this.logger.log(`- Price Rate: 1 ${debtTokenInfo.symbol} = ${Number(debtPrice) / Number(collateralPrice)} ${collateralTokenInfo.symbol}`);
+
 
             // 使用 aggregator 清算, 如果失败则使用 UniswapV3 清算
             let data = "0x";
             try {
-                data = await this.getAggregatorData(chainName, liquidationInfo);
+                data = await this.getAggregatorData(chainName, liquidationInfo, debtToCoverUSD);
             } catch (error) {
                 this.logger.log(`[${chainName}] Use flash loan liquidation with UniswapV3`);
             }
@@ -809,75 +831,88 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 const gasPrice = await flashLoanLiquidation.runner.provider.getFeeData();
                 const maxPriorityFeePerGas = gasPrice.maxPriorityFeePerGas ? gasPrice.maxPriorityFeePerGas * BigInt(15) / BigInt(10) : ethers.parseUnits('1', 'gwei');
                 const maxFeePerGas = gasPrice.maxFeePerGas ? gasPrice.maxFeePerGas + (maxPriorityFeePerGas || BigInt(0)) : undefined;
-                this.logger.log(`[${chainName}] gasPrice: ${gasPrice.gasPrice}, maxFeePerGas: ${maxFeePerGas}, maxPriorityFeePerGas: ${maxPriorityFeePerGas}`);
+                this.logger.log(`[${chainName}] gasPrice: ${gasPrice.gasPrice}, maxFeePerGas: ${maxFeePerGas}, maxPriorityFeePerGas: ${maxPriorityFeePerGas} `);
 
                 const tx = await flashLoanLiquidation.executeLiquidation(
                     maxCollateralAsset,
                     maxDebtAsset,
                     user,
+                    debtToCover,
                     data,
                     {
                         maxFeePerGas,
                         maxPriorityFeePerGas,
-                        gasLimit: 2000000
+                        // gasLimit: 2000000
                     }
                 );
 
-                this.logger.log(`[${chainName}] Flash loan liquidation executed successfully, tx: ${tx.hash}`);
+                this.logger.log(`[${chainName}] Flash loan liquidation executed successfully, tx: ${tx.hash} `);
                 await tx.wait();
 
                 // 清算成功后清除缓存
-                this.liquidationInfoCache.delete(`${chainName}-${user}`);
+                this.liquidationInfoCache.delete(`${chainName} -${user} `);
             } catch (error) {
-                this.logger.error(`[${chainName}] Error executing flash loan liquidation for user ${user}: ${error.message}`);
+                this.logger.error(`[${chainName}] Error executing flash loan liquidation for user ${user}: ${error.message} `);
                 // 清算失败时保留缓存，下次可以直接使用
             }
         } catch (error) {
-            this.logger.error(`[${chainName}] Error executing liquidation for user ${user}: ${error.message}`);
+            this.logger.error(`[${chainName}] Error executing liquidation for user ${user}: ${error.message} `);
         }
     }
 
-    // now only support odos
-    // 1. 输入 token 为预估抵押品金额-0.3% 滑点
-    // 2. 输出 token1 为预估债务品金额+0.3% 滑点
-    // 3. 输出 token2 为 usdc 剩余的所有
-    private async getAggregatorData(chainName: string, liquidationInfo: LiquidationInfo): Promise<string> {
-        // 获取 aave v3 pool
-        const aaveV3Pool = await this.getAaveV3Pool(chainName);
-        // 获取闪电贷费用
-        const flashLoanPremiumTotal = await aaveV3Pool.FLASHLOAN_PREMIUM_TOTAL();
+    // now only support odos, usdc = 5% 
+    private async getAggregatorData(chainName: string, liquidationInfo: LiquidationInfo, debtToCoverUSD: number): Promise<string> {
+        const { collateralPrice, collateralTokenInfo } = liquidationInfo;
+        const collateralAmount = this.USDToAmount(debtToCoverUSD, collateralTokenInfo.decimals, collateralPrice);
+        this.logger.log(`[${chainName}] collateralUSDAmount: ${debtToCoverUSD}, collateralAmount: ${collateralAmount} `);
 
-        const { maxDebtAmount, debtPrice, collateralPrice, debtTokenInfo, collateralTokenInfo } = liquidationInfo;
-        const rate = 0.05; // 5%
-        const debtUSDAmount = this.amountToUSD(maxDebtAmount, debtTokenInfo.decimals, debtPrice);
-        const collateralUSDAmount = debtUSDAmount * (1 + rate)
-        const proportion = debtUSDAmount * (1 + Number(flashLoanPremiumTotal) / 10000) / collateralUSDAmount;
-        const collateralAmount = this.USDToAmount(collateralUSDAmount, collateralTokenInfo.decimals, collateralPrice);
-        this.logger.log(`[${chainName}] proportion: ${proportion}, debtUSDAmount: ${debtUSDAmount}, collateralUSDAmount: ${collateralUSDAmount}, collateralAmount: ${collateralAmount}`);
+        let inputAmount = 0;
+        let outputTokens = [];
+        if (liquidationInfo.maxCollateralAsset === this.chainService.getChainConfig(chainName).contracts.usdc) {
+            inputAmount = collateralAmount * 0.958;
+            outputTokens = [
+                {
+                    "tokenAddress": liquidationInfo.maxDebtAsset,
+                    "proportion": "1"
+                }
+            ]
+        } else if (liquidationInfo.maxDebtAsset === this.chainService.getChainConfig(chainName).contracts.usdc) {
+            inputAmount = collateralAmount * 0.992;
+            outputTokens = [
+                {
+                    "tokenAddress": liquidationInfo.maxDebtAsset,
+                    "proportion": "1"
+                }
+            ]
+        } else {
+            inputAmount = collateralAmount;
+            outputTokens = [
+                {
+                    "tokenAddress": liquidationInfo.maxDebtAsset,
+                    "proportion": "0.95"
+                },
+                {
+                    "tokenAddress": this.chainService.getChainConfig(chainName).contracts.usdc,
+                    "proportion": "0.05"
+                }
+            ]
+        }
 
         const postData = {
             "chainId": this.chainService.getChainConfig(chainName).chainId,
             "inputTokens": [
                 {
                     "tokenAddress": liquidationInfo.maxCollateralAsset,
-                    "amount": collateralAmount.toString()
+                    "amount": inputAmount.toString()
                 }
             ],
-            "outputTokens": [
-                {
-                    "tokenAddress": liquidationInfo.maxDebtAsset,
-                    "proportion": proportion.toString()
-                },
-                {
-                    "tokenAddress": this.chainService.getChainConfig(chainName).contracts.usdc,
-                    "proportion": (1 - proportion).toString()
-                }
-            ],
+            "outputTokens": outputTokens,
             "userAddr": this.chainService.getChainConfig(chainName).contracts.flashLoanLiquidation,
-            "slippageLimitPercent": "0.3",
+            "slippageLimitPercent": "3",
             "pathViz": "false",
             "pathVizImage": "false"
         };
+        this.logger.log(`[${chainName}] postData: ${JSON.stringify(postData, null, 2)} `);
 
         try {
             const response = await axios.post('https://api.odos.xyz/sor/quote/v2', postData, {
@@ -895,9 +930,9 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 return "0x";
             }
         } catch (error) {
-            this.logger.error(`[${chainName}] Error in getAggregatorData: ${error.message}`);
+            this.logger.error(`[${chainName}]Error in getAggregatorData: ${error.message} `);
             if (error.response) {
-                this.logger.error(`[${chainName}] Error response data: ${JSON.stringify(error.response.data, null, 2)}`);
+                this.logger.error(`[${chainName}] Error response data: ${JSON.stringify(error.response.data, null, 2)} `);
             }
             return "0x";
         }
@@ -918,6 +953,9 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 }
             });
 
+            // this.logger.log(`[${flashLoanLiquidation}] output: ${JSON.stringify(response.data.outputTokens, null, 2)} `);
+            // this.logger.log(`[response: ${JSON.stringify(response.data, null, 2)} `);
+
             // 返回 pathId
             if (response.data.transaction) {
                 return ethers.AbiCoder.defaultAbiCoder().encode(
@@ -929,7 +967,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 return "0x";
             }
         } catch (error) {
-            this.logger.error(`${flashLoanLiquidation} Error in getPathData: ${error.message}`);
+            this.logger.error(`${flashLoanLiquidation} Error in getPathData: ${error.message} `);
             return "0x";
         }
     }

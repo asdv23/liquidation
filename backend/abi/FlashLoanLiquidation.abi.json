@@ -89,6 +89,11 @@
         "internalType": "address"
       },
       {
+        "name": "debtToCover",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
         "name": "data",
         "type": "bytes",
         "internalType": "bytes"
@@ -323,6 +328,18 @@
       },
       {
         "name": "profit",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "collateralAsset",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "collateralBalance",
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
