@@ -10,14 +10,11 @@ export declare class BorrowDiscoveryService implements OnModuleInit, OnModuleDes
     private activeLoans;
     private tokenCache;
     private lastLiquidationAttempt;
-    private readonly SAME_ASSET_LIQUIDATION_THRESHOLD;
     private readonly LIQUIDATION_THRESHOLD;
-    private readonly CRITICAL_THRESHOLD;
     private readonly HEALTH_FACTOR_THRESHOLD;
     private readonly MIN_WAIT_TIME;
     private readonly MAX_WAIT_TIME;
     private readonly BATCH_CHECK_TIMEOUT;
-    private readonly PRIVATE_KEY;
     private readonly MIN_DEBT;
     private abiCache;
     constructor(chainService: ChainService, configService: ConfigService, databaseService: DatabaseService);

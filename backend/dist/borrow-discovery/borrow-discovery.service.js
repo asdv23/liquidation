@@ -27,16 +27,13 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         this.activeLoans = new Map();
         this.tokenCache = new Map();
         this.lastLiquidationAttempt = new Map();
-        this.SAME_ASSET_LIQUIDATION_THRESHOLD = 1.0005;
-        this.LIQUIDATION_THRESHOLD = 1.005;
-        this.CRITICAL_THRESHOLD = 1.01;
-        this.HEALTH_FACTOR_THRESHOLD = 1.1;
+        this.LIQUIDATION_THRESHOLD = 1.0005;
+        this.HEALTH_FACTOR_THRESHOLD = 2;
         this.MIN_DEBT = 5;
         this.abiCache = new Map();
         this.MIN_WAIT_TIME = this.configService.get('MIN_CHECK_INTERVAL', 200);
         this.MAX_WAIT_TIME = this.configService.get('MAX_CHECK_INTERVAL', 4 * 60 * 60 * 1000);
         this.BATCH_CHECK_TIMEOUT = this.configService.get('BATCH_CHECK_TIMEOUT', 5000);
-        this.PRIVATE_KEY = this.configService.get('PRIVATE_KEY');
     }
     async onModuleInit() {
         this.logger.log('BorrowDiscoveryService initializing...');
@@ -434,8 +431,6 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         }
         const waitTime = this.calculateWaitTime(chainName, healthFactor);
         const nextCheckTime = new Date(Date.now() + waitTime);
-        const formattedDate = this.formatDate(nextCheckTime);
-        this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate}), healthFactor: ${healthFactor}`);
         activeLoansMap.set(user, {
             nextCheckTime: nextCheckTime,
             healthFactor: healthFactor
@@ -473,25 +468,19 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         return Number(healthFactor) / 1e18;
     }
     calculateWaitTime(chainName, healthFactor) {
-        const minWaitTime = this.chainService.getChainConfig(chainName).minWaitTime;
+        const c1 = this.chainService.getChainConfig(chainName).minWaitTime;
+        const c2 = this.MAX_WAIT_TIME;
+        const x0 = (this.HEALTH_FACTOR_THRESHOLD + this.LIQUIDATION_THRESHOLD) / 2;
+        const k = 20;
         if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
-            return minWaitTime;
+            return c1;
         }
-        if (healthFactor <= this.CRITICAL_THRESHOLD) {
-            return minWaitTime * 2;
+        else if (healthFactor <= this.HEALTH_FACTOR_THRESHOLD) {
+            return c1 + (c2 - c1) / (1 + Math.exp(-k * (healthFactor - x0)));
         }
-        if (healthFactor <= this.HEALTH_FACTOR_THRESHOLD) {
-            const baseTime = minWaitTime * 4;
-            const maxTime = this.MAX_WAIT_TIME / 2;
-            const factor = (healthFactor - this.CRITICAL_THRESHOLD) /
-                (this.HEALTH_FACTOR_THRESHOLD - this.CRITICAL_THRESHOLD);
-            return Math.floor(baseTime + (maxTime - baseTime) * Math.pow(factor, 2));
+        else {
+            return c2;
         }
-        const baseTime = this.MAX_WAIT_TIME / 2;
-        const maxTime = this.MAX_WAIT_TIME;
-        const factor = (healthFactor - this.HEALTH_FACTOR_THRESHOLD) /
-            (2 - this.HEALTH_FACTOR_THRESHOLD);
-        return Math.min(Math.floor(baseTime + (maxTime - baseTime) * Math.log1p(factor)), this.MAX_WAIT_TIME);
     }
     async executeLiquidation(chainName, user, healthFactor, aaveV3Pool) {
         try {
@@ -569,10 +558,6 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             }
             if (maxCollateralAmount === BigInt(0)) {
                 this.logger.log(`[${chainName}] No collateral assets found for user ${user}`);
-                return;
-            }
-            if (maxCollateralAsset == maxDebtAsset && healthFactor > this.SAME_ASSET_LIQUIDATION_THRESHOLD) {
-                this.logger.log(`[${chainName}] Skip liquidation for ${user} as same asset and health factor ${healthFactor} > ${this.SAME_ASSET_LIQUIDATION_THRESHOLD}`);
                 return;
             }
             const collateralTokenInfo = await this.getTokenInfo(chainName, maxCollateralAsset);

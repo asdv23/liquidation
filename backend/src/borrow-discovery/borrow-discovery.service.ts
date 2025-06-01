@@ -31,14 +31,11 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
     private activeLoans: Map<string, Map<string, LoanInfo>> = new Map();
     private tokenCache: Map<string, Map<string, TokenInfo>> = new Map();
     private lastLiquidationAttempt: Map<string, Map<string, { healthFactor: number, retryCount: number }>> = new Map(); // 新增：记录上次清算尝试的健康因子
-    private readonly SAME_ASSET_LIQUIDATION_THRESHOLD = 1.0005; // 相同资产清算阈值
-    private readonly LIQUIDATION_THRESHOLD = 1.005; // 清算阈值
-    private readonly CRITICAL_THRESHOLD = 1.01; // 危险阈值
-    private readonly HEALTH_FACTOR_THRESHOLD = 1.1; // 健康阈值
+    private readonly LIQUIDATION_THRESHOLD = 1.0005; // 清算阈值
+    private readonly HEALTH_FACTOR_THRESHOLD = 2; // 健康阈值
     private readonly MIN_WAIT_TIME: number; // 最小等待时间（毫秒）
     private readonly MAX_WAIT_TIME: number; // 最大等待时间（毫秒）
     private readonly BATCH_CHECK_TIMEOUT: number; // 批次检查超时时间（毫秒）
-    private readonly PRIVATE_KEY: string; // EOA 私钥
     private readonly MIN_DEBT: number = 5; // 最小债务
     private abiCache: Map<string, any> = new Map(); // 新增：ABI 缓存
 
@@ -51,7 +48,6 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         this.MIN_WAIT_TIME = this.configService.get<number>('MIN_CHECK_INTERVAL', 200);
         this.MAX_WAIT_TIME = this.configService.get<number>('MAX_CHECK_INTERVAL', 4 * 60 * 60 * 1000);
         this.BATCH_CHECK_TIMEOUT = this.configService.get<number>('BATCH_CHECK_TIMEOUT', 5000); // 默认5秒
-        this.PRIVATE_KEY = this.configService.get<string>('PRIVATE_KEY');
     }
 
     async onModuleInit() {
@@ -586,8 +582,8 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         // 更新下次检查时间
         const waitTime = this.calculateWaitTime(chainName, healthFactor);
         const nextCheckTime = new Date(Date.now() + waitTime);
-        const formattedDate = this.formatDate(nextCheckTime);
-        this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate}), healthFactor: ${healthFactor}`);
+        // const formattedDate = this.formatDate(nextCheckTime);
+        // this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate}), healthFactor: ${healthFactor}`);
 
         // 更新内存中的健康因子和下次检查时间
         activeLoansMap.set(user, {
@@ -644,42 +640,20 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         return Number(healthFactor) / 1e18;
     }
 
+    // 
     private calculateWaitTime(chainName: string, healthFactor: number): number {
-        const minWaitTime = this.chainService.getChainConfig(chainName).minWaitTime;
+        const c1 = this.chainService.getChainConfig(chainName).minWaitTime;
+        const c2 = this.MAX_WAIT_TIME;
+        const x0 = (this.HEALTH_FACTOR_THRESHOLD + this.LIQUIDATION_THRESHOLD) / 2; // midpoint of [1.0005, 2]
+        const k = 20; // steepness parameter
 
-        // 如果健康因子低于清算阈值，使用最小检查间隔
         if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
-            return minWaitTime;
+            return c1;
+        } else if (healthFactor <= this.HEALTH_FACTOR_THRESHOLD) {
+            return c1 + (c2 - c1) / (1 + Math.exp(-k * (healthFactor - x0)));
+        } else {
+            return c2;
         }
-
-        // 如果健康因子低于危险阈值，使用较短检查间隔
-        if (healthFactor <= this.CRITICAL_THRESHOLD) {
-            return minWaitTime * 2;
-        }
-
-        // 如果健康因子低于健康阈值，使用中等检查间隔
-        if (healthFactor <= this.HEALTH_FACTOR_THRESHOLD) {
-            // 使用指数函数计算等待时间，健康因子越接近阈值，等待时间越短
-            const baseTime = minWaitTime * 4;
-            const maxTime = this.MAX_WAIT_TIME / 2; // 15分钟
-            const factor = (healthFactor - this.CRITICAL_THRESHOLD) /
-                (this.HEALTH_FACTOR_THRESHOLD - this.CRITICAL_THRESHOLD);
-
-            return Math.floor(baseTime + (maxTime - baseTime) * Math.pow(factor, 2));
-        }
-
-        // 如果健康因子高于健康阈值，使用较长检查间隔
-        // 使用对数函数计算等待时间，健康因子越高，等待时间越长
-        const baseTime = this.MAX_WAIT_TIME / 2; // 15分钟
-        const maxTime = this.MAX_WAIT_TIME; // 30分钟
-        const factor = (healthFactor - this.HEALTH_FACTOR_THRESHOLD) /
-            (2 - this.HEALTH_FACTOR_THRESHOLD); // 假设最大健康因子为2
-
-        // 确保等待时间不超过最大值
-        return Math.min(
-            Math.floor(baseTime + (maxTime - baseTime) * Math.log1p(factor)),
-            this.MAX_WAIT_TIME
-        );
     }
 
     private async executeLiquidation(chainName: string, user: string, healthFactor: number, aaveV3Pool: ethers.Contract) {
@@ -785,10 +759,6 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             }
             if (maxCollateralAmount === BigInt(0)) {
                 this.logger.log(`[${chainName}] No collateral assets found for user ${user}`);
-                return;
-            }
-            if (maxCollateralAsset == maxDebtAsset && healthFactor > this.SAME_ASSET_LIQUIDATION_THRESHOLD) {
-                this.logger.log(`[${chainName}] Skip liquidation for ${user} as same asset and health factor ${healthFactor} > ${this.SAME_ASSET_LIQUIDATION_THRESHOLD}`);
                 return;
             }
 

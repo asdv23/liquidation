@@ -84,3 +84,76 @@ script/deployParameters/DeployBase.s.sol:DeployBase
   params.uniswapV3Dex 0x37767d8102966577A4f5c7930e0657C592E5061b
   params.flashLoanLiquidation 0x1E5fc0875e2646562Cf694d992182CBb96033Ce4
 ```
+
+# wait time
+backend/chart.png
+
+S-Shaped Curve Function and Visualization
+Function Definition
+The piecewise function ( f(x) ) is defined as follows, where ( h ) is the input in hours, ( c_1 = 1 ) second, and ( c_2 = h \cdot 3600 ) seconds:
+[f(x) =\begin{cases}1, & \text{if } x \leq 1.0005 \1 + \frac{h \cdot 3600 - 1}{1 + e^{-20(x - 1.50225)}}, & \text{if } 1.0005 < x \leq 2 \h \cdot 3600, & \text{if } x \geq 2\end{cases}]
+This function:
+
+Returns ( c_1 = 1 ) second for ( x \leq 1.0005 ).
+Transitions smoothly via a sigmoid curve in ( 1.0005 < x \leq 2 ).
+Returns ( c_2 = h \cdot 3600 ) seconds for ( x \geq 2 ).
+
+Chart Visualization
+The chart below visualizes ( f(x) ) for ( h = 4 ) (i.e., ( c_2 = 4 \cdot 3600 = 14400 ) seconds) over ( x \in [0, 3] ). The y-axis represents the output in seconds, and the x-axis is dimensionless.
+{
+  "type": "line",
+  "data": {
+    "datasets": [
+      {
+        "label": "f(x)",
+        "data": [
+          {"x": 0, "y": 1},
+          {"x": 1.0005, "y": 1},
+          {"x": 1.1, "y": 1 + 14399 / (1 + Math.exp(-20 * (1.1 - 1.50225)))},
+          {"x": 1.2, "y": 1 + 14399 / (1 + Math.exp(-20 * (1.2 - 1.50225)))},
+          {"x": 1.3, "y": 1 + 14399 / (1 + Math.exp(-20 * (1.3 - 1.50225)))},
+          {"x": 1.4, "y": 1 + 14399 / (1 + Math.exp(-20 * (1.4 - 1.50225)))},
+          {"x": 1.5, "y": 1 + 14399 / (1 + Math.exp(-20 * (1.5 - 1.50225)))},
+          {"x": 1.6, "y": 1 + 14399 / (1 + Math.exp(-20 * (1.6 - 1.50225)))},
+          {"x": 1.7, "y": 1 + 14399 / (1 + Math.exp(-20 * (1.7 - 1.50225)))},
+          {"x": 1.8, "y": 1 + 14399 / (1 + Math.exp(-20 * (1.8 - 1.50225)))},
+          {"x": 1.9, "y": 1 + 14399 / (1 + Math.exp(-20 * (1.9 - 1.50225)))},
+          {"x": 2, "y": 14400},
+          {"x": 3, "y": 14400}
+        ],
+        "borderColor": "#1e90ff",
+        "backgroundColor": "#1e90ff",
+        "fill": false,
+        "tension": 0,
+        "pointRadius": 0
+      }
+    ]
+  },
+  "options": {
+    "scales": {
+      "x": {
+        "type": "linear",
+        "title": { "display": true, "text": "x" },
+        "min": 0,
+        "max": 3
+      },
+      "y": {
+        "type": "linear",
+        "title": { "display": true, "text": "f(x) (seconds)" },
+        "min": 0,
+        "max": 15000
+      }
+    },
+    "plugins": {
+      "legend": { "display": true },
+      "title": { "display": true, "text": "S-Shaped Curve with c1=1s, c2=4h" }
+    }
+  }
+}
+
+The chart displays:
+
+A constant value of 1 second for ( x \leq 1.0005 ).
+An S-shaped transition from 1 to 14400 seconds in ( 1.0005 < x \leq 2 ).
+A constant value of 14400 seconds for ( x \geq 2 ).
+
