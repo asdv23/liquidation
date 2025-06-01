@@ -15,6 +15,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
     private tokenCache: Map<string, Map<string, TokenInfo>> = new Map();
     private liquidationInfoCache: Map<string, LiquidationInfo> = new Map();
     private readonly LIQUIDATION_THRESHOLD = 1.0005; // 清算阈值
+    private readonly LIQUIDATION_THRESHOLD_2 = 1.001; // 清算阈值
     private readonly HEALTH_FACTOR_THRESHOLD = 2; // 健康阈值
     private readonly MIN_WAIT_TIME: number; // 最小等待时间（毫秒）
     private readonly MAX_WAIT_TIME: number; // 最大等待时间（毫秒）
@@ -556,8 +557,8 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             await this.executeLiquidation(chainName, user, healthFactor, aaveV3Pool);
             this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate}), healthFactor: ${healthFactor}`);
         } else {
-            if (healthFactor < 1.001) {
-                this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate}), healthFactor: ${healthFactor}, totalDebt: ${totalDebt} USD`);
+            if (healthFactor < this.LIQUIDATION_THRESHOLD_2) {
+                this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms, healthFactor: ${healthFactor.toFixed(8)} (${totalDebt.toFixed(2)} USD)`);
             }
             // 如果健康因子高于清算阈值，清除清算记录
             this.liquidationInfoCache.delete(`${chainName}-${user}`);
@@ -618,17 +619,20 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         return Number(healthFactor) / 1e18;
     }
 
-    // 
     private calculateWaitTime(chainName: string, healthFactor: number): number {
-        const c1 = this.chainService.getChainConfig(chainName).minWaitTime;
-        const c2 = this.MAX_WAIT_TIME;
-        const x0 = (this.HEALTH_FACTOR_THRESHOLD + this.LIQUIDATION_THRESHOLD) / 2; // midpoint of [1.0005, 2]
-        const k = 20; // steepness parameter
+        const c1 = this.chainService.getChainConfig(chainName).minWaitTime; // Minimum wait time
+        const c2 = this.MAX_WAIT_TIME; // Maximum wait time
+        const c3 = this.chainService.getChainConfig(chainName).blockTime;
 
         if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
             return c1;
+        }
+        if (healthFactor <= this.LIQUIDATION_THRESHOLD_2) {
+            return c3;
         } else if (healthFactor <= this.HEALTH_FACTOR_THRESHOLD) {
-            return Math.floor(c1 + (c2 - c1) / (1 + Math.exp(-k * (healthFactor - x0))));
+            // 在 LIQUIDATION_THRESHOLD_2 和 HEALTH_FACTOR_THRESHOLD 之间线性增长
+            const ratio = (healthFactor - this.LIQUIDATION_THRESHOLD_2) / (this.HEALTH_FACTOR_THRESHOLD - this.LIQUIDATION_THRESHOLD_2);
+            return Math.floor(c3 + (c2 - c3) * ratio);
         } else {
             return c2;
         }
@@ -972,4 +976,4 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             return "0x";
         }
     }
-} 
+}
