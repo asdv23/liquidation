@@ -50,7 +50,7 @@ let ChainService = ChainService_1 = class ChainService {
             const feeData = await provider.getFeeData();
             const minDebtUSD = Number(feeData.gasPrice) * (2000000) * config.nativePrice / 1e18;
             config.minDebtUSD = minDebtUSD < config.minDebtUSD ? config.minDebtUSD : minDebtUSD;
-            this.logger.log(`Network detected for ${chainName}, chainId: ${config.chainId}, gasPrice: ${feeData.gasPrice}, minDebtUSD: ${minDebtUSD}`);
+            this.logger.log(`Network detected for ${chainName}, chainId: ${config.chainId}, gasPrice: ${feeData.gasPrice}, minDebtUSD: ${config.minDebtUSD}`);
             const ws = provider.websocket;
             ws.on('error', (error) => {
                 this.logger.error(`WebSocket error for ${chainName}: ${error.message}`);

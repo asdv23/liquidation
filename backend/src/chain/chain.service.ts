@@ -51,7 +51,7 @@ export class ChainService implements OnModuleInit, OnModuleDestroy {
             const feeData = await provider.getFeeData();
             const minDebtUSD = Number(feeData.gasPrice) * (2000000) * config.nativePrice / 1e18;
             config.minDebtUSD = minDebtUSD < config.minDebtUSD ? config.minDebtUSD : minDebtUSD;
-            this.logger.log(`Network detected for ${chainName}, chainId: ${config.chainId}, gasPrice: ${feeData.gasPrice}, minDebtUSD: ${minDebtUSD}`);
+            this.logger.log(`Network detected for ${chainName}, chainId: ${config.chainId}, gasPrice: ${feeData.gasPrice}, minDebtUSD: ${config.minDebtUSD}`);
 
             // 添加错误处理
             const ws = provider.websocket as WebSocket;

@@ -215,27 +215,27 @@ forge script --broadcast \
 --rpc-url $BASE_RPC_URL \
 --private-key $PRIVATE_KEY \
 --sig 'run()' \
-script/deployParameters/DeployBase.s.sol:DeployBase
+script/deployParameters/DeployBase.s.sol:UpgradeBase
 
 <!-- op -->
 forge script --broadcast \
 --rpc-url $OP_RPC_URL \
 --private-key $PRIVATE_KEY \
 --sig 'run()' \
-script/deployParameters/DeployOP.s.sol:DeployOP
+script/deployParameters/DeployOP.s.sol:UpgradeOP
 
 <!-- arb -->
 forge script --broadcast \
 --rpc-url $ARB_RPC_URL \
 --private-key $PRIVATE_KEY \
 --sig 'run()' \
-script/deployParameters/DeployARB.s.sol:DeployARB
+script/deployParameters/DeployARB.s.sol:UpgradeARB
 
 <!-- avax -->
 forge script --broadcast \
 --rpc-url $AVAX_RPC_URL \
 --private-key $PRIVATE_KEY \
 --sig 'run()' \
-script/deployParameters/DeployAVAX.s.sol:DeployAVAX
+script/deployParameters/DeployAVAX.s.sol:UpgradeAVAX
 ```
 

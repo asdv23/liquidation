@@ -30,7 +30,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         // 从环境变量读取配置，默认值：最小1s，最大4小时
         this.MIN_WAIT_TIME = this.configService.get<number>('MIN_CHECK_INTERVAL', 200);
         this.MAX_WAIT_TIME = this.configService.get<number>('MAX_CHECK_INTERVAL', 4 * 60 * 60 * 1000);
-        this.BATCH_CHECK_TIMEOUT = this.configService.get<number>('BATCH_CHECK_TIMEOUT', 15000); // 默认15秒
+        this.BATCH_CHECK_TIMEOUT = this.configService.get<number>('BATCH_CHECK_TIMEOUT', 5000); // 默认 5 秒
     }
 
     async onModuleInit() {
@@ -353,7 +353,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 this.logger.log(`- Transaction Hash: ${event?.transactionHash || event?.log?.transactionHash}`);
 
                 const activeLoansMap = this.activeLoans.get(chainName);
-                if (activeLoansMap && activeLoansMap.has(user)) {
+                if (activeLoansMap && activeLoansMap.get(user)?.healthFactor > 0) {
                     activeLoansMap.delete(user);
                     await this.databaseService.recordLiquidation(
                         chainName,
@@ -548,13 +548,8 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             const cachedInfo = this.liquidationInfoCache.get(cacheKey);
             this.logger.log(`[${chainName}] ${user} totalDebt: ${totalDebt} USD, healthFactor: ${healthFactor}`);
 
-            // 如果是首次尝试清算，或者新的健康因子比上次更低，则执行清算
-            if (!cachedInfo || healthFactor < cachedInfo.healthFactor) {
-                this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}, attempting liquidation`);
-                await this.executeLiquidation(chainName, user, healthFactor, aaveV3Pool);
-            } else {
-                this.logger.log(`[${chainName}] Skip liquidation for ${user} as health factor ${healthFactor} >= ${cachedInfo.healthFactor}, retry ${cachedInfo.retryCount}`);
-            }
+            this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}, attempting liquidation ${cachedInfo?.retryCount}`);
+            await this.executeLiquidation(chainName, user, healthFactor, aaveV3Pool);
         } else {
             // 如果健康因子高于清算阈值，清除清算记录
             this.liquidationInfoCache.delete(`${chainName}-${user}`);
@@ -563,8 +558,8 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
         // 更新下次检查时间
         const waitTime = this.calculateWaitTime(chainName, healthFactor);
         const nextCheckTime = new Date(Date.now() + waitTime);
-        // const formattedDate = this.formatDate(nextCheckTime);
-        // this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate}), healthFactor: ${healthFactor}`);
+        const formattedDate = this.formatDate(nextCheckTime);
+        this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate}), healthFactor: ${healthFactor}`);
 
         // 更新内存中的健康因子和下次检查时间
         activeLoansMap.set(user, {
@@ -833,6 +828,10 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 const maxFeePerGas = gasPrice.maxFeePerGas ? gasPrice.maxFeePerGas + (maxPriorityFeePerGas || BigInt(0)) : undefined;
                 this.logger.log(`[${chainName}] gasPrice: ${gasPrice.gasPrice}, maxFeePerGas: ${maxFeePerGas}, maxPriorityFeePerGas: ${maxPriorityFeePerGas} `);
 
+                let gasLimit = 3000000;
+                if (healthFactor > 1) {
+                    gasLimit = 0;
+                }
                 const tx = await flashLoanLiquidation.executeLiquidation(
                     maxCollateralAsset,
                     maxDebtAsset,
@@ -842,7 +841,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                     {
                         maxFeePerGas,
                         maxPriorityFeePerGas,
-                        // gasLimit: 2000000
+                        gasLimit: gasLimit
                     }
                 );
 

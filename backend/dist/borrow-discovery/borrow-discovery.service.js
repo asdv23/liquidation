@@ -34,7 +34,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         this.abiCache = new Map();
         this.MIN_WAIT_TIME = this.configService.get('MIN_CHECK_INTERVAL', 200);
         this.MAX_WAIT_TIME = this.configService.get('MAX_CHECK_INTERVAL', 4 * 60 * 60 * 1000);
-        this.BATCH_CHECK_TIMEOUT = this.configService.get('BATCH_CHECK_TIMEOUT', 15000);
+        this.BATCH_CHECK_TIMEOUT = this.configService.get('BATCH_CHECK_TIMEOUT', 5000);
     }
     async onModuleInit() {
         this.logger.log('BorrowDiscoveryService initializing...');
@@ -263,7 +263,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
     }
     createLiquidationCallEventHandler(chainName, provider) {
         return async (collateralAsset, debtAsset, user, debtToCover, liquidatedCollateralAmount, liquidator, receiveAToken, event) => {
-            var _a, _b;
+            var _a, _b, _c;
             try {
                 user = user.toLowerCase();
                 const priceOracle = await this.getPriceOracle(chainName);
@@ -283,9 +283,9 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                 this.logger.log(`- Receive AToken: ${receiveAToken}`);
                 this.logger.log(`- Transaction Hash: ${(event === null || event === void 0 ? void 0 : event.transactionHash) || ((_a = event === null || event === void 0 ? void 0 : event.log) === null || _a === void 0 ? void 0 : _a.transactionHash)}`);
                 const activeLoansMap = this.activeLoans.get(chainName);
-                if (activeLoansMap && activeLoansMap.has(user)) {
+                if (activeLoansMap && ((_b = activeLoansMap.get(user)) === null || _b === void 0 ? void 0 : _b.healthFactor) > 0) {
                     activeLoansMap.delete(user);
-                    await this.databaseService.recordLiquidation(chainName, user, liquidator, (event === null || event === void 0 ? void 0 : event.transactionHash) || ((_b = event === null || event === void 0 ? void 0 : event.log) === null || _b === void 0 ? void 0 : _b.transactionHash));
+                    await this.databaseService.recordLiquidation(chainName, user, liquidator, (event === null || event === void 0 ? void 0 : event.transactionHash) || ((_c = event === null || event === void 0 ? void 0 : event.log) === null || _c === void 0 ? void 0 : _c.transactionHash));
                     this.logger.log(`[${chainName}] Recorded liquidation for user ${user}`);
                 }
                 else {
@@ -423,19 +423,16 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             const cacheKey = `${chainName}-${user}`;
             const cachedInfo = this.liquidationInfoCache.get(cacheKey);
             this.logger.log(`[${chainName}] ${user} totalDebt: ${totalDebt} USD, healthFactor: ${healthFactor}`);
-            if (!cachedInfo || healthFactor < cachedInfo.healthFactor) {
-                this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}, attempting liquidation`);
-                await this.executeLiquidation(chainName, user, healthFactor, aaveV3Pool);
-            }
-            else {
-                this.logger.log(`[${chainName}] Skip liquidation for ${user} as health factor ${healthFactor} >= ${cachedInfo.healthFactor}, retry ${cachedInfo.retryCount}`);
-            }
+            this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}, attempting liquidation ${cachedInfo === null || cachedInfo === void 0 ? void 0 : cachedInfo.retryCount}`);
+            await this.executeLiquidation(chainName, user, healthFactor, aaveV3Pool);
         }
         else {
             this.liquidationInfoCache.delete(`${chainName}-${user}`);
         }
         const waitTime = this.calculateWaitTime(chainName, healthFactor);
         const nextCheckTime = new Date(Date.now() + waitTime);
+        const formattedDate = this.formatDate(nextCheckTime);
+        this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate}), healthFactor: ${healthFactor}`);
         activeLoansMap.set(user, {
             nextCheckTime: nextCheckTime,
             healthFactor: healthFactor
@@ -644,10 +641,15 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                 const gasPrice = await flashLoanLiquidation.runner.provider.getFeeData();
                 const maxPriorityFeePerGas = gasPrice.maxPriorityFeePerGas ? gasPrice.maxPriorityFeePerGas * BigInt(15) / BigInt(10) : ethers_1.ethers.parseUnits('1', 'gwei');
                 const maxFeePerGas = gasPrice.maxFeePerGas ? gasPrice.maxFeePerGas + (maxPriorityFeePerGas || BigInt(0)) : undefined;
-                this.logger.log(`[${chainName}]gasPrice: ${gasPrice.gasPrice}, maxFeePerGas: ${maxFeePerGas}, maxPriorityFeePerGas: ${maxPriorityFeePerGas} `);
+                this.logger.log(`[${chainName}] gasPrice: ${gasPrice.gasPrice}, maxFeePerGas: ${maxFeePerGas}, maxPriorityFeePerGas: ${maxPriorityFeePerGas} `);
+                let gasLimit = 3000000;
+                if (healthFactor > 1) {
+                    gasLimit = 0;
+                }
                 const tx = await flashLoanLiquidation.executeLiquidation(maxCollateralAsset, maxDebtAsset, user, debtToCover, data, {
                     maxFeePerGas,
                     maxPriorityFeePerGas,
+                    gasLimit: gasLimit
                 });
                 this.logger.log(`[${chainName}] Flash loan liquidation executed successfully, tx: ${tx.hash} `);
                 await tx.wait();
@@ -668,7 +670,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         let inputAmount = 0;
         let outputTokens = [];
         if (liquidationInfo.maxCollateralAsset === this.chainService.getChainConfig(chainName).contracts.usdc) {
-            inputAmount = collateralAmount * 0.955;
+            inputAmount = collateralAmount * 0.958;
             outputTokens = [
                 {
                     "tokenAddress": liquidationInfo.maxDebtAsset,
@@ -677,7 +679,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             ];
         }
         else if (liquidationInfo.maxDebtAsset === this.chainService.getChainConfig(chainName).contracts.usdc) {
-            inputAmount = collateralAmount * 0.995;
+            inputAmount = collateralAmount * 0.992;
             outputTokens = [
                 {
                     "tokenAddress": liquidationInfo.maxDebtAsset,
@@ -750,7 +752,6 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                     'Accept': 'application/json',
                 }
             });
-            this.logger.log(`[${flashLoanLiquidation}] output: ${JSON.stringify(response.data.outputTokens, null, 2)} `);
             if (response.data.transaction) {
                 return ethers_1.ethers.AbiCoder.defaultAbiCoder().encode(['address', 'address', 'bytes'], [usdc, response.data.transaction.to, response.data.transaction.data]);
             }
