@@ -423,9 +423,10 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             else {
                 this.logger.log(`[${chainName}] Skip liquidation for ${user} as health factor ${healthFactor} >= ${cachedInfo.healthFactor}, retry ${cachedInfo.retryCount}`);
             }
-            return;
         }
-        this.liquidationInfoCache.delete(`${chainName}-${user}`);
+        else {
+            this.liquidationInfoCache.delete(`${chainName}-${user}`);
+        }
         const waitTime = this.calculateWaitTime(chainName, healthFactor);
         const nextCheckTime = new Date(Date.now() + waitTime);
         activeLoansMap.set(user, {
@@ -556,6 +557,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                 }
             }
             if (maxDebtAmount === BigInt(0) || maxCollateralAmount === BigInt(0)) {
+                this.logger.log(`[${chainName}] No debt or collateral found for user ${user}, maxDebtAmount: ${maxDebtAmount}, maxCollateralAmount: ${maxCollateralAmount}`);
                 return null;
             }
             const liquidationInfo = {

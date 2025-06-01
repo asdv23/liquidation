@@ -547,11 +547,10 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             } else {
                 this.logger.log(`[${chainName}] Skip liquidation for ${user} as health factor ${healthFactor} >= ${cachedInfo.healthFactor}, retry ${cachedInfo.retryCount}`);
             }
-            return;
+        } else {
+            // 如果健康因子高于清算阈值，清除清算记录
+            this.liquidationInfoCache.delete(`${chainName}-${user}`);
         }
-
-        // 如果健康因子高于清算阈值，清除清算记录
-        this.liquidationInfoCache.delete(`${chainName}-${user}`);
 
         // 更新下次检查时间
         const waitTime = this.calculateWaitTime(chainName, healthFactor);
@@ -735,8 +734,12 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             }
 
             if (maxDebtAmount === BigInt(0) || maxCollateralAmount === BigInt(0)) {
+                this.logger.log(`[${chainName}] No debt or collateral found for user ${user}, maxDebtAmount: ${maxDebtAmount}, maxCollateralAmount: ${maxCollateralAmount}`);
                 return null;
             }
+
+            // 3. odos 计算最佳swap 路径
+            // const bestSwapPath = await this.getBestSwapPath(chainName, maxDebtAsset, maxCollateralAsset);
 
             const liquidationInfo: LiquidationInfo = {
                 maxDebtAsset,
