@@ -24,6 +24,7 @@ let ChainService = ChainService_1 = class ChainService {
         this.PRIVATE_KEY = this.configService.get('PRIVATE_KEY');
     }
     async onModuleInit() {
+        this.logger.log(`signer address: ${new ethers_1.ethers.Wallet(this.PRIVATE_KEY, null).address}`);
         this.initializationPromise = this.initializeProviders();
         await this.initializationPromise;
     }
@@ -42,8 +43,14 @@ let ChainService = ChainService_1 = class ChainService {
         try {
             const wsUrl = config.rpcUrl.replace('https://', 'wss://');
             const provider = new ethers_1.ethers.WebSocketProvider(wsUrl);
-            await provider.getNetwork();
-            this.logger.log(`Network detected for ${chainName}`);
+            await provider.getNetwork().then(network => {
+                config.chainId = Number(network.chainId);
+                return network;
+            });
+            const feeData = await provider.getFeeData();
+            const minDebtUSD = Number(feeData.gasPrice) * (2000000) * config.nativePrice / 1e18;
+            config.minDebtUSD = minDebtUSD < config.minDebtUSD ? config.minDebtUSD : minDebtUSD;
+            this.logger.log(`Network detected for ${chainName}, chainId: ${config.chainId}, gasPrice: ${feeData.gasPrice}, minDebtUSD: ${minDebtUSD}`);
             const ws = provider.websocket;
             ws.on('error', (error) => {
                 this.logger.error(`WebSocket error for ${chainName}: ${error.message}`);

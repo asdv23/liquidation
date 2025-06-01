@@ -15,7 +15,6 @@ export declare class BorrowDiscoveryService implements OnModuleInit, OnModuleDes
     private readonly MIN_WAIT_TIME;
     private readonly MAX_WAIT_TIME;
     private readonly BATCH_CHECK_TIMEOUT;
-    private readonly MIN_DEBT;
     private readonly CACHE_TTL;
     private abiCache;
     constructor(chainService: ChainService, configService: ConfigService, databaseService: DatabaseService);
@@ -31,6 +30,8 @@ export declare class BorrowDiscoveryService implements OnModuleInit, OnModuleDes
     private loadTokenCache;
     private getTokenInfo;
     private formatAmount;
+    private amountToUSD;
+    private USDToAmount;
     private loadActiveLoans;
     private createBorrowEventHandler;
     private createLiquidationCallEventHandler;
@@ -46,4 +47,6 @@ export declare class BorrowDiscoveryService implements OnModuleInit, OnModuleDes
     private calculateWaitTime;
     private getLiquidationInfo;
     private executeLiquidation;
+    private getAggregatorData;
+    private getPathData;
 }

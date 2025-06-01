@@ -16,8 +16,10 @@ function getChainsConfigFromEnv() {
             const rpcUrl = process.env[`${chainKey.toUpperCase()}_RPC_URL`];
             const aavev3Pool = process.env[`${chainKey.toUpperCase()}_AAVE_V3_POOL`];
             const flashLoanLiquidation = process.env[`${chainKey.toUpperCase()}_FLASH_LOAN_LIQUIDATION`];
+            const usdc = process.env[`${chainKey.toUpperCase()}_USDC`];
             const blockTime = process.env[`${chainKey.toUpperCase()}_BLOCK_TIME`];
-            if (!rpcUrl || !aavev3Pool || !flashLoanLiquidation || !blockTime) {
+            const nativePrice = process.env[`${chainKey.toUpperCase()}_NATIVE_PRICE`] || 3000;
+            if (!rpcUrl || !aavev3Pool || !flashLoanLiquidation || !blockTime || !usdc) {
                 logger.warn(`Missing configuration for chain ${chainKey}: RPC_URL=${rpcUrl}, AAVE_V3_POOL=${aavev3Pool}, FLASH_LOAN_LIQUIDATION=${flashLoanLiquidation}, BLOCK_TIME=${blockTime}`);
                 continue;
             }
@@ -27,16 +29,20 @@ function getChainsConfigFromEnv() {
                 continue;
             }
             chains[chainKey] = {
+                chainId: 0,
                 name: chainKey,
                 rpcUrl: rpcUrl,
                 contracts: {
                     aavev3Pool,
                     flashLoanLiquidation,
+                    usdc,
                 },
                 blockTime: blockTimeMs,
                 minWaitTime: Math.floor(blockTimeMs / 2),
+                nativePrice: Number(nativePrice),
+                minDebtUSD: 2,
             };
-            logger.log(`Loaded chain config for ${chainKey}: RPC=${rpcUrl}, AAVE_V3_POOL=${aavev3Pool}, FlashLoanLiquidation=${flashLoanLiquidation}, BlockTime=${blockTimeMs}ms, MinWaitTime=${Math.floor(blockTimeMs / 2)}ms`);
+            logger.log(`Loaded chain config for ${chainKey}: RPC=${rpcUrl}, AAVE_V3_POOL=${aavev3Pool}, FlashLoanLiquidation=${flashLoanLiquidation}, BlockTime=${blockTimeMs}ms, MinWaitTime=${Math.floor(blockTimeMs / 2)}ms, NativePrice=${nativePrice}`);
         }
     }
     if (Object.keys(chains).length === 0) {

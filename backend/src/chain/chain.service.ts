@@ -17,6 +17,7 @@ export class ChainService implements OnModuleInit, OnModuleDestroy {
     }
 
     async onModuleInit() {
+        this.logger.log(`signer address: ${new ethers.Wallet(this.PRIVATE_KEY, null).address}`);
         this.initializationPromise = this.initializeProviders();
         await this.initializationPromise;
     }
@@ -43,8 +44,14 @@ export class ChainService implements OnModuleInit, OnModuleDestroy {
             const provider = new ethers.WebSocketProvider(wsUrl);
 
             // 等待网络检测
-            await provider.getNetwork();
-            this.logger.log(`Network detected for ${chainName}`);
+            await provider.getNetwork().then(network => {
+                config.chainId = Number(network.chainId);
+                return network;
+            });
+            const feeData = await provider.getFeeData();
+            const minDebtUSD = Number(feeData.gasPrice) * (2000000) * config.nativePrice / 1e18;
+            config.minDebtUSD = minDebtUSD < config.minDebtUSD ? config.minDebtUSD : minDebtUSD;
+            this.logger.log(`Network detected for ${chainName}, chainId: ${config.chainId}, gasPrice: ${feeData.gasPrice}, minDebtUSD: ${minDebtUSD}`);
 
             // 添加错误处理
             const ws = provider.websocket as WebSocket;

@@ -85,6 +85,18 @@ script/deployParameters/DeployBase.s.sol:DeployBase
   params.flashLoanLiquidation 0x1E5fc0875e2646562Cf694d992182CBb96033Ce4
 ```
 
+### 设置后端环境, 成功则查询余额
+```
+<!-- 修改.env为.env.develop -->
+<!-- 删除.dev.db -->
+npm run db:setup
+npm run start:dev
+
+cast call 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 "balanceOf(address)" 0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266
+cast call 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 "balanceOf(address)" 0xFcc65cb843f0667883f3Ac805291511c76B0B5EF
+cast send --value 1ether 0xFcc65cb843f0667883f3Ac805291511c76B0B5EF --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 --rpc-url http://localhost:8546
+```
+
 # wait time
 backend/chart.png
 

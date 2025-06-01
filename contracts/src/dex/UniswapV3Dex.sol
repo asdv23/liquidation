@@ -54,10 +54,18 @@ contract UniswapV3Dex is Initializable, UUPSUpgradeable, OwnableUpgradeable, IDe
         if (actualAmountIn >= amountIn) revert("no usdc to get");
 
         // 剩余的 tokenIn 换成 usdc
-        uint256 usdcAmount = swapExactTokensForTokens(tokenIn, usdc, amountIn - actualAmountIn, 0, receiver);
-        if (usdcAmount < 1e6) revert("get usdc is less than 1U"); // 1U = 1e6
+        uint256 profit = 0;
+        if (tokenIn != usdc) {
+            profit = swapExactTokensForTokens(tokenIn, usdc, amountIn - actualAmountIn, 0, receiver);
+            if (profit < 1e6) revert("got usdc is less than 1U"); // 1U = 1e6
+        } else {
+            // usdc no need to swap
+            profit = amountIn - actualAmountIn;
+            if (profit < 1e6) revert("remaining usdc is less than 1U"); // 1U = 1e6
+            IERC20(usdc).transfer(receiver, profit);
+        }
 
-        emit Swap(usdc, usdcAmount, receiver);
+        emit Swap(usdc, profit, receiver);
     }
 
     // 寻找最佳费率池（ExactInputSingle）

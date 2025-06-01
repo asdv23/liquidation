@@ -62,6 +62,9 @@ script/deployParameters/Deploy<network>.s.sol:Upgrade<network>
 
 ### example
 ```shell
+anvil --fork-url https://eth-mainnet.g.alchemy.com/v2/0aoAtW5IQvhhwLgW4wFQFbW7eM4czhOb --fork-block-number 22608355 --port 8546
+anvil --fork-url https://arb-mainnet.g.alchemy.com/v2/0aoAtW5IQvhhwLgW4wFQFbW7eM4czhOb --fork-block-number 342773642 --port 8546
+
 # deploy
 forge script --broadcast \
 --rpc-url http://localhost:8546 \
@@ -154,7 +157,7 @@ forge verify-contract \
 
 
 ## Prod
-### base
+### deploy
 ```
 export ETH_RPC_URL=Your URL
 export PRIVATE_KEY=Your Private key
@@ -193,6 +196,46 @@ forge script --broadcast \
 --private-key $PRIVATE_KEY \
 --sig 'run()' \
 script/deployParameters/DeployAVAX.s.sol:DeployAVAX
+```
 
+### upgrade
+```
+export ETH_RPC_URL=Your URL
+export PRIVATE_KEY=Your Private key
+
+<!-- eth -->
+forge script --broadcast \
+--rpc-url $ETH_RPC_URL \
+--private-key $PRIVATE_KEY \
+--sig 'run()' \
+script/deployParameters/DeployETH.s.sol:UpgradeETH
+
+<!-- base -->
+forge script --broadcast \
+--rpc-url $BASE_RPC_URL \
+--private-key $PRIVATE_KEY \
+--sig 'run()' \
+script/deployParameters/DeployBase.s.sol:DeployBase
+
+<!-- op -->
+forge script --broadcast \
+--rpc-url $OP_RPC_URL \
+--private-key $PRIVATE_KEY \
+--sig 'run()' \
+script/deployParameters/DeployOP.s.sol:DeployOP
+
+<!-- arb -->
+forge script --broadcast \
+--rpc-url $ARB_RPC_URL \
+--private-key $PRIVATE_KEY \
+--sig 'run()' \
+script/deployParameters/DeployARB.s.sol:DeployARB
+
+<!-- avax -->
+forge script --broadcast \
+--rpc-url $AVAX_RPC_URL \
+--private-key $PRIVATE_KEY \
+--sig 'run()' \
+script/deployParameters/DeployAVAX.s.sol:DeployAVAX
 ```
 

@@ -1,4 +1,5 @@
 export interface ChainConfig {
+    chainId: number;
     name: string;
     rpcUrl: string;
     contracts: {
@@ -6,4 +7,6 @@ export interface ChainConfig {
     };
     blockTime: number;
     minWaitTime: number;
+    nativePrice: number;
+    minDebtUSD: number;
 }

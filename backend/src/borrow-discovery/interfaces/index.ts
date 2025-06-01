@@ -22,6 +22,10 @@ export interface LiquidationInfo {
     maxDebtAmount: bigint;
     maxCollateralAsset: string;
     maxCollateralAmount: bigint;
+    collateralTokenInfo: TokenInfo;
+    debtTokenInfo: TokenInfo;
+    debtPrice: bigint;
+    collateralPrice: bigint;
     user: string;
     healthFactor: number;
     timestamp: number;

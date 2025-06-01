@@ -62,7 +62,7 @@ contract FlashLoanLiquidationTest is Test {
         vm.mockCall(pool, abi.encodeWithSelector(IPool.flashLoanSimple.selector), abi.encode());
 
         // 执行清算
-        liquidation.executeLiquidation(collateralAsset, debtAsset, user);
+        liquidation.executeLiquidation(collateralAsset, debtAsset, user, "0x");
     }
 
     function testExecuteOperation() public {

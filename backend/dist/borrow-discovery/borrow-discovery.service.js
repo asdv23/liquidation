@@ -18,6 +18,7 @@ const config_1 = require("@nestjs/config");
 const database_service_1 = require("../database/database.service");
 const fs = require("fs");
 const path = require("path");
+const axios_1 = require("axios");
 let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoveryService {
     constructor(chainService, configService, databaseService) {
         this.chainService = chainService;
@@ -29,12 +30,11 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         this.liquidationInfoCache = new Map();
         this.LIQUIDATION_THRESHOLD = 1.0005;
         this.HEALTH_FACTOR_THRESHOLD = 2;
-        this.MIN_DEBT = 5;
-        this.CACHE_TTL = 30000;
+        this.CACHE_TTL = 45000;
         this.abiCache = new Map();
         this.MIN_WAIT_TIME = this.configService.get('MIN_CHECK_INTERVAL', 200);
         this.MAX_WAIT_TIME = this.configService.get('MAX_CHECK_INTERVAL', 4 * 60 * 60 * 1000);
-        this.BATCH_CHECK_TIMEOUT = this.configService.get('BATCH_CHECK_TIMEOUT', 5000);
+        this.BATCH_CHECK_TIMEOUT = this.configService.get('BATCH_CHECK_TIMEOUT', 15000);
     }
     async onModuleInit() {
         this.logger.log('BorrowDiscoveryService initializing...');
@@ -197,6 +197,12 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
     formatAmount(amount, decimals) {
         return Number(ethers_1.ethers.formatUnits(amount, decimals)).toFixed(6);
     }
+    amountToUSD(amount, decimals, price) {
+        return Number(ethers_1.ethers.formatUnits(amount, decimals)) * Number(price) / 1e8;
+    }
+    USDToAmount(usd, decimals, price) {
+        return Number((usd * 1e8 / Number(price) * (10 ** decimals)).toFixed(0));
+    }
     async loadActiveLoans() {
         try {
             const chains = this.chainService.getActiveChains();
@@ -271,8 +277,8 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                 this.logger.log(`- Collateral Asset: ${collateralAsset} (${collateralInfo.symbol})`);
                 this.logger.log(`- Debt Asset: ${debtAsset} (${debtInfo.symbol})`);
                 this.logger.log(`- User: ${user}`);
-                this.logger.log(`- Debt to Cover: ${this.formatAmount(debtToCover, debtInfo.decimals)} ${debtInfo.symbol} = ${this.formatAmount(debtToCover * debtPrice, 6)} USD`);
-                this.logger.log(`- Liquidated Amount: ${this.formatAmount(liquidatedCollateralAmount, collateralInfo.decimals)} ${collateralInfo.symbol} = ${this.formatAmount(liquidatedCollateralAmount * collateralPrice, 6)} USD`);
+                this.logger.log(`- Debt to Cover: ${this.formatAmount(debtToCover, debtInfo.decimals)} ${debtInfo.symbol} = ${this.amountToUSD(debtToCover, debtInfo.decimals, debtPrice)} USD`);
+                this.logger.log(`- Liquidated Amount: ${this.formatAmount(liquidatedCollateralAmount, collateralInfo.decimals)} ${collateralInfo.symbol} = ${this.amountToUSD(liquidatedCollateralAmount, collateralInfo.decimals, collateralPrice)} USD`);
                 this.logger.log(`- Liquidator: ${liquidator}`);
                 this.logger.log(`- Receive AToken: ${receiveAToken}`);
                 this.logger.log(`- Transaction Hash: ${(event === null || event === void 0 ? void 0 : event.transactionHash) || ((_a = event === null || event === void 0 ? void 0 : event.log) === null || _a === void 0 ? void 0 : _a.transactionHash)}`);
@@ -395,7 +401,6 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
     async processBatch(chainName, batchUsers, activeLoansMap) {
         const aaveV3Pool = await this.getAaveV3Pool(chainName);
         const accountDataMap = await this.getUserAccountDataBatch(chainName, aaveV3Pool, batchUsers);
-        const lastLiquidationMap = this.liquidationInfoCache.get(chainName);
         await Promise.all(batchUsers.map(async (user) => {
             const accountData = accountDataMap.get(user);
             if (!accountData)
@@ -406,19 +411,13 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
     async processUser(chainName, user, accountData, activeLoansMap, aaveV3Pool) {
         const healthFactor = this.calculateHealthFactor(accountData.healthFactor);
         const totalDebt = Number(ethers_1.ethers.formatUnits(accountData.totalDebtBase, 8));
-        if (totalDebt < this.MIN_DEBT) {
-            activeLoansMap.delete(user);
-            this.liquidationInfoCache.delete(`${chainName}-${user}`);
-            await this.databaseService.deactivateLoan(chainName, user);
-            this.logger.log(`[${chainName}] Removed user ${user} from active loans and database as total debt is less than ${this.MIN_DEBT} USD`);
-            return;
-        }
         if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
             const cacheKey = `${chainName}-${user}`;
             const cachedInfo = this.liquidationInfoCache.get(cacheKey);
+            this.logger.log(`[${chainName}] ${user} totalDebt: ${totalDebt} USD, healthFactor: ${healthFactor}`);
             if (!cachedInfo || healthFactor < cachedInfo.healthFactor) {
                 this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}, attempting liquidation`);
-                await this.executeLiquidation(chainName, user, healthFactor, aaveV3Pool);
+                await this.executeLiquidation(chainName, user, healthFactor, aaveV3Pool, totalDebt);
             }
             else {
                 this.logger.log(`[${chainName}] Skip liquidation for ${user} as health factor ${healthFactor} >= ${cachedInfo.healthFactor}, retry ${cachedInfo.retryCount}`);
@@ -488,7 +487,11 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             return cachedInfo;
         }
         try {
-            const multicall = await this.getMulticall(chainName);
+            const [multicall, dataProvider, priceOracle] = await Promise.all([
+                this.getMulticall(chainName),
+                this.getDataProvider(chainName),
+                this.getPriceOracle(chainName)
+            ]);
             const calls = [
                 {
                     target: aaveV3Pool.target, callData: aaveV3Pool.interface.encodeFunctionData('getUserConfiguration', [user])
@@ -500,7 +503,6 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             const [, returnData] = await multicall.aggregate.staticCall(calls);
             const [userConfig,] = aaveV3Pool.interface.decodeFunctionResult('getUserConfiguration', returnData[0]);
             const [reservesList,] = aaveV3Pool.interface.decodeFunctionResult('getReservesList', returnData[1]);
-            const dataProvider = await this.getDataProvider(chainName);
             const reserveCalls = [];
             const borrowingAssets = [];
             const collateralAssets = [];
@@ -549,6 +551,7 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                     }
                     if (isUsingAsCollateral) {
                         const collateralAmount = BigInt(userReserveData.currentATokenBalance);
+                        this.logger.log(`[${chainName}] ${user} collateralAmount: ${collateralAmount}, asset: ${asset}`);
                         if (collateralAmount > maxCollateralAmount) {
                             maxCollateralAmount = collateralAmount;
                             maxCollateralAsset = asset;
@@ -560,11 +563,21 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
                 this.logger.log(`[${chainName}] No debt or collateral found for user ${user}, maxDebtAmount: ${maxDebtAmount}, maxCollateralAmount: ${maxCollateralAmount}`);
                 return null;
             }
+            const [collateralTokenInfo, debtTokenInfo, debtPrice, collateralPrice] = await Promise.all([
+                this.getTokenInfo(chainName, maxCollateralAsset),
+                this.getTokenInfo(chainName, maxDebtAsset),
+                priceOracle.getAssetPrice(maxDebtAsset),
+                priceOracle.getAssetPrice(maxCollateralAsset)
+            ]);
             const liquidationInfo = {
                 maxDebtAsset,
                 maxDebtAmount,
                 maxCollateralAsset,
                 maxCollateralAmount,
+                collateralTokenInfo,
+                debtTokenInfo,
+                debtPrice,
+                collateralPrice,
                 user,
                 healthFactor,
                 timestamp: Date.now(),
@@ -578,29 +591,45 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
             return null;
         }
     }
-    async executeLiquidation(chainName, user, healthFactor, aaveV3Pool) {
+    async executeLiquidation(chainName, user, healthFactor, aaveV3Pool, totalDebt) {
+        var _a;
         try {
+            if (totalDebt < this.chainService.getChainConfig(chainName).minDebtUSD) {
+                (_a = this.activeLoans.get(chainName)) === null || _a === void 0 ? void 0 : _a.delete(user);
+                this.liquidationInfoCache.delete(`${chainName}-${user}`);
+                await this.databaseService.deactivateLoan(chainName, user);
+                this.logger.log(`[${chainName}] Removed user ${user} from active loans and database as total debt is less than ${this.chainService.getChainConfig(chainName).minDebtUSD} USD`);
+                return;
+            }
             const liquidationInfo = await this.getLiquidationInfo(chainName, user, healthFactor, aaveV3Pool);
             if (!liquidationInfo) {
                 return;
             }
-            const { maxDebtAsset, maxDebtAmount, maxCollateralAsset, maxCollateralAmount } = liquidationInfo;
-            const collateralTokenInfo = await this.getTokenInfo(chainName, maxCollateralAsset);
-            const debtTokenInfo = await this.getTokenInfo(chainName, maxDebtAsset);
-            this.logger.log(`[${chainName}] 💰 Executing flash loan liquidation:`);
+            const { maxDebtAsset, maxDebtAmount, maxCollateralAsset, maxCollateralAmount, collateralTokenInfo, debtTokenInfo, debtPrice } = liquidationInfo;
+            const debtUSDAmount = this.amountToUSD(maxDebtAmount, debtTokenInfo.decimals, debtPrice);
+            this.logger.log(`[${chainName}] 💰 Executing flash loan liquidation with aggregator:`);
             this.logger.log(`- User: ${user}`);
             this.logger.log(`- Health Factor: ${healthFactor}`);
-            this.logger.log(`- Collateral Asset: ${maxCollateralAsset} (${(Number(maxCollateralAmount) / Number(10 ** collateralTokenInfo.decimals)).toFixed(6)} ${collateralTokenInfo.symbol})`);
-            this.logger.log(`- Debt Asset: ${maxDebtAsset} (${(Number(maxDebtAmount) / Number(10 ** debtTokenInfo.decimals)).toFixed(6)} ${debtTokenInfo.symbol})`);
-            const flashLoanLiquidation = await this.getFlashLoanLiquidation(chainName);
+            this.logger.log(`- Collateral Asset: ${maxCollateralAsset} (${this.formatAmount(maxCollateralAmount, collateralTokenInfo.decimals)} ${collateralTokenInfo.symbol})`);
+            this.logger.log(`- Debt Asset: ${maxDebtAsset} (${this.formatAmount(maxDebtAmount, debtTokenInfo.decimals)} ${debtTokenInfo.symbol})`);
+            this.logger.log(`- Debt Asset USD: ${debtUSDAmount.toFixed(6)}`);
+            let data = "0x";
             try {
+                data = await this.getAggregatorData(chainName, liquidationInfo);
+            }
+            catch (error) {
+                this.logger.log(`[${chainName}] Use flash loan liquidation with UniswapV3`);
+            }
+            try {
+                const flashLoanLiquidation = await this.getFlashLoanLiquidation(chainName);
                 const gasPrice = await flashLoanLiquidation.runner.provider.getFeeData();
                 const maxPriorityFeePerGas = gasPrice.maxPriorityFeePerGas ? gasPrice.maxPriorityFeePerGas * BigInt(15) / BigInt(10) : ethers_1.ethers.parseUnits('1', 'gwei');
                 const maxFeePerGas = gasPrice.maxFeePerGas ? gasPrice.maxFeePerGas + (maxPriorityFeePerGas || BigInt(0)) : undefined;
                 this.logger.log(`[${chainName}] gasPrice: ${gasPrice.gasPrice}, maxFeePerGas: ${maxFeePerGas}, maxPriorityFeePerGas: ${maxPriorityFeePerGas}`);
-                const tx = await flashLoanLiquidation.executeLiquidation(maxCollateralAsset, maxDebtAsset, user, {
+                const tx = await flashLoanLiquidation.executeLiquidation(maxCollateralAsset, maxDebtAsset, user, data, {
                     maxFeePerGas,
                     maxPriorityFeePerGas,
+                    gasLimit: 2000000
                 });
                 this.logger.log(`[${chainName}] Flash loan liquidation executed successfully, tx: ${tx.hash}`);
                 await tx.wait();
@@ -612,6 +641,89 @@ let BorrowDiscoveryService = BorrowDiscoveryService_1 = class BorrowDiscoverySer
         }
         catch (error) {
             this.logger.error(`[${chainName}] Error executing liquidation for user ${user}: ${error.message}`);
+        }
+    }
+    async getAggregatorData(chainName, liquidationInfo) {
+        const aaveV3Pool = await this.getAaveV3Pool(chainName);
+        const flashLoanPremiumTotal = await aaveV3Pool.FLASHLOAN_PREMIUM_TOTAL();
+        const { maxDebtAmount, debtPrice, collateralPrice, debtTokenInfo, collateralTokenInfo } = liquidationInfo;
+        const rate = 0.05;
+        const debtUSDAmount = this.amountToUSD(maxDebtAmount, debtTokenInfo.decimals, debtPrice);
+        const collateralUSDAmount = debtUSDAmount * (1 + rate);
+        const proportion = debtUSDAmount * (1 + Number(flashLoanPremiumTotal) / 10000) / collateralUSDAmount;
+        const collateralAmount = this.USDToAmount(collateralUSDAmount, collateralTokenInfo.decimals, collateralPrice);
+        this.logger.log(`[${chainName}] proportion: ${proportion}, debtUSDAmount: ${debtUSDAmount}, collateralUSDAmount: ${collateralUSDAmount}, collateralAmount: ${collateralAmount}`);
+        const postData = {
+            "chainId": this.chainService.getChainConfig(chainName).chainId,
+            "inputTokens": [
+                {
+                    "tokenAddress": liquidationInfo.maxCollateralAsset,
+                    "amount": collateralAmount.toString()
+                }
+            ],
+            "outputTokens": [
+                {
+                    "tokenAddress": liquidationInfo.maxDebtAsset,
+                    "proportion": proportion.toString()
+                },
+                {
+                    "tokenAddress": this.chainService.getChainConfig(chainName).contracts.usdc,
+                    "proportion": (1 - proportion).toString()
+                }
+            ],
+            "userAddr": this.chainService.getChainConfig(chainName).contracts.flashLoanLiquidation,
+            "slippageLimitPercent": "0.3",
+            "pathViz": "false",
+            "pathVizImage": "false"
+        };
+        try {
+            const response = await axios_1.default.post('https://api.odos.xyz/sor/quote/v2', postData, {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                }
+            });
+            if (response.data.pathId) {
+                return await this.getPathData(this.chainService.getChainConfig(chainName).contracts.flashLoanLiquidation, this.chainService.getChainConfig(chainName).contracts.usdc, response.data.pathId);
+                ;
+            }
+            else {
+                this.logger.error(`[${chainName}] No pathId in response`);
+                return "0x";
+            }
+        }
+        catch (error) {
+            this.logger.error(`[${chainName}] Error in getAggregatorData: ${error.message}`);
+            if (error.response) {
+                this.logger.error(`[${chainName}] Error response data: ${JSON.stringify(error.response.data, null, 2)}`);
+            }
+            return "0x";
+        }
+    }
+    async getPathData(flashLoanLiquidation, usdc, pathId) {
+        let data = JSON.stringify({
+            "userAddr": flashLoanLiquidation,
+            "pathId": pathId,
+            "simulate": "false",
+        });
+        try {
+            const response = await axios_1.default.post('https://api.odos.xyz/sor/assemble', data, {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                }
+            });
+            if (response.data.transaction) {
+                return ethers_1.ethers.AbiCoder.defaultAbiCoder().encode(['address', 'address', 'bytes'], [usdc, response.data.transaction.to, response.data.transaction.data]);
+            }
+            else {
+                this.logger.error(`${flashLoanLiquidation} No pathId in response`);
+                return "0x";
+            }
+        }
+        catch (error) {
+            this.logger.error(`${flashLoanLiquidation} Error in getPathData: ${error.message}`);
+            return "0x";
         }
     }
 };
