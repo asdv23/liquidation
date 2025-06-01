@@ -542,6 +542,9 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             return;
         }
 
+        const waitTime = this.calculateWaitTime(chainName, healthFactor);
+        const nextCheckTime = new Date(Date.now() + waitTime);
+
         // 如果健康因子低于清算阈值，尝试清算
         if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
             const cacheKey = `${chainName}-${user}`;
@@ -550,16 +553,12 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
 
             this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}, attempting liquidation ${cachedInfo?.retryCount}`);
             await this.executeLiquidation(chainName, user, healthFactor, aaveV3Pool);
+            const formattedDate = this.formatDate(nextCheckTime);
+            this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate}), healthFactor: ${healthFactor}`);
         } else {
             // 如果健康因子高于清算阈值，清除清算记录
             this.liquidationInfoCache.delete(`${chainName}-${user}`);
         }
-
-        // 更新下次检查时间
-        const waitTime = this.calculateWaitTime(chainName, healthFactor);
-        const nextCheckTime = new Date(Date.now() + waitTime);
-        const formattedDate = this.formatDate(nextCheckTime);
-        this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate}), healthFactor: ${healthFactor}`);
 
         // 更新内存中的健康因子和下次检查时间
         activeLoansMap.set(user, {
