@@ -205,7 +205,7 @@ npm run start:dev:watch
 npm run build
 
 # 使用 PM2 启动服务
-pm2 start dist/main.js --name "bot"
+pm2 start dist/main.js --name "bot" --log-date-format "YYYY-MM-DD HH:mm:ss" --merge-logs
 
 # 查看服务状态
 pm2 status

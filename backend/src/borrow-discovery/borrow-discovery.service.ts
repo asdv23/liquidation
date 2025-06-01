@@ -544,6 +544,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
 
         const waitTime = this.calculateWaitTime(chainName, healthFactor);
         const nextCheckTime = new Date(Date.now() + waitTime);
+        const formattedDate = this.formatDate(nextCheckTime);
 
         // 如果健康因子低于清算阈值，尝试清算
         if (healthFactor <= this.LIQUIDATION_THRESHOLD) {
@@ -553,9 +554,11 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
 
             this.logger.log(`[${chainName}] Liquidation threshold ${healthFactor} <= ${this.LIQUIDATION_THRESHOLD} reached for user ${user}, attempting liquidation ${cachedInfo?.retryCount}`);
             await this.executeLiquidation(chainName, user, healthFactor, aaveV3Pool);
-            const formattedDate = this.formatDate(nextCheckTime);
             this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate}), healthFactor: ${healthFactor}`);
         } else {
+            if (healthFactor < 1.001) {
+                this.logger.log(`[${chainName}] Next check for user ${user} in ${waitTime}ms (at ${formattedDate}), healthFactor: ${healthFactor}, totalDebt: ${totalDebt} USD`);
+            }
             // 如果健康因子高于清算阈值，清除清算记录
             this.liquidationInfoCache.delete(`${chainName}-${user}`);
         }
