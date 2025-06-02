@@ -30,4 +30,5 @@ export interface LiquidationInfo {
     healthFactor: number;
     timestamp: number;
     retryCount: number;
+    data: string;
 } 

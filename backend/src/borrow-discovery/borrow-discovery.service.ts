@@ -768,7 +768,8 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                 user,
                 healthFactor,
                 timestamp: Date.now(),
-                retryCount: (cachedInfo?.retryCount || 0) + 1
+                retryCount: (cachedInfo?.retryCount || 0) + 1,
+                data: "0x"
             };
 
             this.liquidationInfoCache.set(cacheKey, liquidationInfo);
@@ -820,9 +821,14 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             // 使用 aggregator 清算, 如果失败则使用 UniswapV3 清算
             let data = "0x";
             try {
-                data = await this.getAggregatorData(chainName, liquidationInfo, debtToCoverUSD);
+                if (liquidationInfo.data === "0x") {
+                    data = await this.getAggregatorData(chainName, liquidationInfo, debtToCoverUSD);
+                    liquidationInfo.data = data; // add to cache
+                } else {
+                    data = liquidationInfo.data;
+                }
             } catch (error) {
-                this.logger.log(`[${chainName}] Use flash loan liquidation with UniswapV3`);
+                this.logger.log(`[${chainName}] Use flash loan liquidation with UniswapV3, data: ${liquidationInfo.data}`);
             }
 
             try {
@@ -847,7 +853,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                     {
                         maxFeePerGas,
                         maxPriorityFeePerGas,
-                        gasLimit: gasLimit
+                        gasLimit: gasLimit > 0 ? gasLimit : undefined
                     }
                 );
 
