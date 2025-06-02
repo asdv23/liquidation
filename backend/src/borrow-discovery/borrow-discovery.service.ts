@@ -851,7 +851,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
                     }
                 );
 
-                this.logger.log(`[${chainName}] Flash loan liquidation executed successfully, tx: ${tx.hash} `);
+                this.logger.log(`[${chainName}] Flash loan liquidation executed successfully, tx: ${tx.hash} gasLimit: ${tx.gasLimit}`);
                 await tx.wait();
 
                 // 清算成功后清除缓存

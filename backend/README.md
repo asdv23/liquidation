@@ -31,7 +31,7 @@ LiquidationCall - height:30672598
 }
 ```
 ### 2. fork base
-anvil --fork-url https://base-mainnet.g.alchemy.com/v2/0aoAtW5IQvhhwLgW4wFQFbW7eM4czhOb --fork-block-number 30672597 --port 8546
+anvil --fork-url https://opt-mainnet.g.alchemy.com/v2/0aoAtW5IQvhhwLgW4wFQFbW7eM4czhOb --fork-block-number 136601194 --port 8546
 cast send --value 1ether 0xFcc65cb843f0667883f3Ac805291511c76B0B5EF --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 
 #### 验证可以清算 - 查询链上健康因子
@@ -72,11 +72,14 @@ Private Key: 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 Address: 0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266
 ```
 cd contracts
+export ETH_RPC_URL=http://localhost:8546
+export PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+
 forge script --broadcast \
---rpc-url http://localhost:8546 \
---private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+--rpc-url $ETH_RPC_URL \
+--private-key $PRIVATE_KEY \
 --sig 'run()' \
-script/deployParameters/DeployBase.s.sol:DeployBase
+script/deployParameters/DeployETH.s.sol:UpgradeETH
 
 == Logs ==
   params.aaveV3Pool 0xA238Dd80C259a72e81d7e4664a9801593F98d1c5
@@ -93,8 +96,10 @@ script/deployParameters/DeployBase.s.sol:DeployBase
 npm run db:setup
 npm run start:dev
 
-cast call 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 "balanceOf(address)" 0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266
+<!-- eth -->
 cast call 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 "balanceOf(address)" 0xFcc65cb843f0667883f3Ac805291511c76B0B5EF
+cast call 0x40D16FC0246aD3160Ccc09B8D0D3A2cD28aE6C2f "balanceOf(address)" 0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266
+cast call 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2 "balanceOf(address)" 0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266
 <!-- base -->
 cast call 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 "balanceOf(address)" 0xFcc65cb843f0667883f3Ac805291511c76B0B5EF
 cast call 0x4200000000000000000000000000000000000006 "balanceOf(address)" 0xFcc65cb843f0667883f3Ac805291511c76B0B5EF
