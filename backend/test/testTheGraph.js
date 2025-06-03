@@ -35,6 +35,14 @@ function formatTimestamp(timestamp) {
         hour12: false
     });
 }
+// {
+//     accounts(where: {id: "0x6216525b4107bca9e83fe302605ff2d81fa36992"}) {
+//       borrows(orderBy: timestamp, orderDirection: desc) {
+//         amountUSD
+//         timestamp
+//       }
+//     }
+//   }
 
 // 1727712000: Tue Oct 01 2024 00:00:00 GMT+0800 (中国标准时间)
 // 1738223465: Thu Jan 30 2025 15:51:05 GMT+0800 (中国标准时间)
