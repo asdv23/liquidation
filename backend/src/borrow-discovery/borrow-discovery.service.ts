@@ -821,11 +821,16 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             // 使用 aggregator 清算, 如果失败则使用 UniswapV3 清算
             let data = "0x";
             try {
-                if (liquidationInfo.data === "0x") {
-                    data = await this.getAggregatorData(chainName, liquidationInfo, debtToCoverUSD);
-                    liquidationInfo.data = data; // add to cache
+                if (liquidationInfo.retryCount >= 1) {
+                    if (liquidationInfo.data === "0x") {
+                        data = await this.getAggregatorData(chainName, liquidationInfo, debtToCoverUSD);
+                        liquidationInfo.data = data; // add to cache
+                    } else {
+                        data = liquidationInfo.data;
+                    }
+                    this.logger.log(`[${chainName}] Use flash loan liquidation with aggregator, data: ${liquidationInfo.data}`);
                 } else {
-                    data = liquidationInfo.data;
+                    this.logger.log(`[${chainName}] Use flash loan liquidation with UniswapV3, data: ${liquidationInfo.data}`);
                 }
             } catch (error) {
                 this.logger.log(`[${chainName}] Use flash loan liquidation with UniswapV3, data: ${liquidationInfo.data}`);
