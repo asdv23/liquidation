@@ -14,7 +14,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
     private activeLoans: Map<string, Map<string, LoanInfo>> = new Map();
     private tokenCache: Map<string, Map<string, TokenInfo>> = new Map();
     private liquidationInfoCache: Map<string, LiquidationInfo> = new Map();
-    private readonly LIQUIDATION_THRESHOLD = 1.0005; // 清算阈值
+    private readonly LIQUIDATION_THRESHOLD = 1.00000005; // 清算阈值
     private readonly LIQUIDATION_THRESHOLD_2 = 1.001; // 清算阈值
     private readonly HEALTH_FACTOR_THRESHOLD = 2; // 健康阈值
     private readonly MIN_WAIT_TIME: number; // 最小等待时间（毫秒）
@@ -914,7 +914,7 @@ export class BorrowDiscoveryService implements OnModuleInit, OnModuleDestroy {
             "inputTokens": [
                 {
                     "tokenAddress": liquidationInfo.maxCollateralAsset,
-                    "amount": inputAmount.toString()
+                    "amount": inputAmount.toFixed(0).toString()
                 }
             ],
             "outputTokens": outputTokens,
