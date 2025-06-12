@@ -94,3 +94,9 @@ go build -o liquidation-bot cmd/main.go
 ## 许可证
 
 MIT 
+
+# 使用 PM2 启动服务
+pm2 start liquidation-bot --name "bot" --log-date-format "YYYY-MM-DD HH:mm:ss" --merge-logs
+
+# 查看 sqllite
+brew install sqlite

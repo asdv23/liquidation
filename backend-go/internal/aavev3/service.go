@@ -2,6 +2,7 @@ package aavev3
 
 import (
 	"context"
+	"fmt"
 	"liquidation-bot/config"
 	"liquidation-bot/pkg/blockchain"
 	"sync"
@@ -47,7 +48,7 @@ func NewService(
 	cfg *config.Config,
 	dbWrapper *DBWrapper,
 ) (*Service, error) {
-	logger = logger.With(zap.String("chain", chainName))
+	logger = logger.Named(chainName)
 	contracts, err := chainClient.GetContracts(chainName)
 	if err != nil {
 		logger.Error("failed to get contracts", zap.Error(err))
@@ -74,7 +75,12 @@ func (s *Service) Initialize() error {
 	eg.Go(s.startPriceStream)
 	// 3.启动健康因子检查
 	eg.Go(s.startHealthFactorChecker)
-	return eg.Wait()
+	err := eg.Wait()
+	if err != nil {
+		s.logger.Error("failed to initialize service", zap.Error(err))
+		return fmt.Errorf("failed to initialize service: %w", err)
+	}
+	return nil
 }
 
 // startHealthFactorChecker 启动健康因子检查

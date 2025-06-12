@@ -18,7 +18,7 @@ type DBWrapper struct {
 }
 
 func NewDBWrapper(db *gorm.DB) (*DBWrapper, error) {
-	w := &DBWrapper{db: db}
+	w := &DBWrapper{db: db, tokenCache: make(map[string]map[string]*models.Token), activeLoans: make(map[string]map[string]*models.Loan)}
 	var eg errgroup.Group
 	eg.Go(w.loadTokenCache)
 	eg.Go(w.loadActiveLoans)
@@ -50,17 +50,7 @@ func (w *DBWrapper) loadActiveLoans() error {
 		if w.activeLoans[loan.ChainName] == nil {
 			w.activeLoans[loan.ChainName] = make(map[string]*models.Loan)
 		}
-		w.activeLoans[loan.ChainName][loan.User] = &models.Loan{
-			User:                    loan.User,
-			IsActive:                loan.IsActive,
-			NextCheckTime:           loan.NextCheckTime,
-			HealthFactor:            loan.HealthFactor,
-			LiquidationDiscoveredAt: loan.LiquidationDiscoveredAt,
-			LiquidationTxHash:       loan.LiquidationTxHash,
-			LiquidationTime:         loan.LiquidationTime,
-			Liquidator:              loan.Liquidator,
-			LiquidationDelay:        loan.LiquidationDelay,
-		}
+		w.activeLoans[loan.ChainName][loan.User] = &loan
 	}
 	return nil
 }
@@ -93,6 +83,9 @@ func (w *DBWrapper) AddTokenInfo(chainName string, address string, symbol string
 	if err := w.db.Create(&token).Error; err != nil {
 		return nil, fmt.Errorf("failed to add token info: %w", err)
 	}
+	if w.tokenCache[chainName] == nil {
+		w.tokenCache[chainName] = make(map[string]*models.Token)
+	}
 	w.tokenCache[chainName][address] = token
 
 	return token, nil
@@ -111,15 +104,15 @@ func (w *DBWrapper) CreateOrUpdateActiveLoan(chainName string, user string) erro
 	defer w.Unlock()
 
 	var loan models.Loan
-	if err := w.db.Where("chain_name = ? AND user = ?", chainName, user).
+	if err := w.db.Where(&models.Loan{ChainName: chainName, User: user}).
 		Assign(models.Loan{IsActive: true}).
 		FirstOrCreate(&loan).Error; err != nil {
 		return fmt.Errorf("failed to upsert active loan: %w", err)
 	}
-	w.activeLoans[chainName][user] = &models.Loan{
-		User:     user,
-		IsActive: true,
+	if w.activeLoans[chainName] == nil {
+		w.activeLoans[chainName] = make(map[string]*models.Loan)
 	}
+	w.activeLoans[chainName][user] = &loan
 
 	return nil
 }
@@ -128,7 +121,7 @@ func (w *DBWrapper) UpdateActiveLoanHealthFactor(chainName string, user string, 
 	w.Lock()
 	defer w.Unlock()
 
-	if err := w.db.Model(&models.Loan{}).Where("chain_name = ? AND user = ?", chainName, user).Update("health_factor", healthFactor).Error; err != nil {
+	if err := w.db.Model(&models.Loan{}).Where(&models.Loan{ChainName: chainName, User: user}).Update("health_factor", healthFactor).Error; err != nil {
 		return fmt.Errorf("failed to update active loan: %w", err)
 	}
 	w.activeLoans[chainName][user].HealthFactor = healthFactor

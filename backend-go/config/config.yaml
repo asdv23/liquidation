@@ -9,43 +9,48 @@ database:
 
 chains:
   eth:
-    rpcUrl: "https://eth-mainnet.g.alchemy.com/v2/pcjcWRd25rHUyXD69NgPlO1tNFcELh6t"
+    rpcUrl: "wss://eth-mainnet.g.alchemy.com/v2/pcjcWRd25rHUyXD69NgPlO1tNFcELh6t"
     gasLimit: 3000000
     gasPriceMultiplier: 1.1
     contractAddresses:
       aavev3pool: "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"
       flashloanliquidation: "0x44204C331b29E63053aEb45D4c1794Fc3B7a4287"
       usdc: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+      multicall3: "0xca11bde05977b3631167028862be2a173976ca11"
   base:
-    rpcUrl: "https://base-mainnet.g.alchemy.com/v2/pcjcWRd25rHUyXD69NgPlO1tNFcELh6t"
+    rpcUrl: "wss://base-mainnet.g.alchemy.com/v2/pcjcWRd25rHUyXD69NgPlO1tNFcELh6t"
     gasLimit: 3000000
     gasPriceMultiplier: 1.1
     contractAddresses:
       aavev3pool: "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5"
       flashloanliquidation: "0xE46BFAfAEDeB9CA98424860426E0093345bf2aE1"
       usdc: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+      multicall3: "0xca11bde05977b3631167028862be2a173976ca11"
   opt:
-    rpcUrl: "https://opt-mainnet.g.alchemy.com/v2/pcjcWRd25rHUyXD69NgPlO1tNFcELh6t"
+    rpcUrl: "wss://opt-mainnet.g.alchemy.com/v2/pcjcWRd25rHUyXD69NgPlO1tNFcELh6t"
     gasLimit: 3000000
     gasPriceMultiplier: 1.1
     contractAddresses:
       aavev3pool: "0x794a61358D6845594F94dc1DB02A252b5b4814aD"
       flashloanliquidation: "0xE46BFAfAEDeB9CA98424860426E0093345bf2aE1"
       usdc: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85"
+      multicall3: "0xca11bde05977b3631167028862be2a173976ca11"
   arb:
-    rpcUrl: "https://arb-mainnet.g.alchemy.com/v2/pcjcWRd25rHUyXD69NgPlO1tNFcELh6t"
+    rpcUrl: "wss://arb-mainnet.g.alchemy.com/v2/pcjcWRd25rHUyXD69NgPlO1tNFcELh6t"
     gasLimit: 3000000
     gasPriceMultiplier: 1.1
     contractAddresses:
       aavev3pool: "0x794a61358D6845594F94dc1DB02A252b5b4814aD"
       flashloanliquidation: "0x09Ab4549E340595ec824F28d291c7e1C91FaF68A"
       usdc: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"
+      multicall3: "0xca11bde05977b3631167028862be2a173976ca11"
   avax:
-    rpcUrl: "https://avax-mainnet.g.alchemy.com/v2/pcjcWRd25rHUyXD69NgPlO1tNFcELh6t"
+    rpcUrl: "wss://avax-mainnet.g.alchemy.com/v2/pcjcWRd25rHUyXD69NgPlO1tNFcELh6t"
     gasLimit: 3000000
     gasPriceMultiplier: 1.1
     contractAddresses:
       aavev3pool: "0x794a61358D6845594F94dc1DB02A252b5b4814aD"
       flashloanliquidation: "0xE46BFAfAEDeB9CA98424860426E0093345bf2aE1"
       usdc: "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E"
+      multicall3: "0xca11bde05977b3631167028862be2a173976ca11"
 

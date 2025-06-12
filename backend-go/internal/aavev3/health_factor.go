@@ -6,6 +6,7 @@ import (
 	bindings "liquidation-bot/bindings/common"
 	"liquidation-bot/internal/models"
 	"liquidation-bot/pkg/blockchain"
+	"reflect"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
@@ -53,6 +54,7 @@ func (s *Service) checkHealthFactorsBatch() {
 		if end > len(usersToCheck) {
 			end = len(usersToCheck)
 		}
+		s.logger.Info("processing batch", zap.Int("i", i), zap.Int("total", len(usersToCheck)), zap.Int("batchSize", batchSize))
 
 		batch := usersToCheck[i:end]
 		if err := s.processBatch(batch, activeLoans); err != nil {
@@ -67,7 +69,7 @@ func (s *Service) processBatch(batchUsers []string, activeLoans map[string]*mode
 	// 获取用户账户数据
 	accountDataMap, err := s.getUserAccountDataBatch(batchUsers)
 	if err != nil {
-		return fmt.Errorf("failed to get user account data: %w", err)
+		return fmt.Errorf("failed to get user account data for batch: %w", err)
 	}
 
 	// 处理每个用户
@@ -89,7 +91,7 @@ func (s *Service) processBatch(batchUsers []string, activeLoans map[string]*mode
 
 func (s *Service) processUser(user string, accountData *UserAccountData, loan *models.Loan) error {
 	if loan == nil {
-		return fmt.Errorf("loan is nil: %s", user)
+		return s.dbWrapper.CreateOrUpdateActiveLoan(s.chainName, user)
 	}
 
 	// 计算健康因子
@@ -133,7 +135,7 @@ func (s *Service) getUserAccountDataBatch(users []string) (map[string]*UserAccou
 	var aaveAbi *abi.ABI
 
 	for _, user := range users {
-		abi, err := aavev3.AaveOracleMetaData.GetAbi()
+		abi, err := aavev3.PoolMetaData.GetAbi()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get abi: %w", err)
 		}
@@ -154,16 +156,31 @@ func (s *Service) getUserAccountDataBatch(users []string) (map[string]*UserAccou
 	// 执行模拟调用
 	callOpts, cancel := s.getCallOpts()
 	defer cancel()
-	var out []interface{}
+	var aggregate3Result []any
 	raw := &bindings.Multicall3Raw{Contract: s.contracts.Multicall3}
-	if err := raw.Call(callOpts, &out, "aggregate3", calls); err != nil {
+	if err := raw.Call(callOpts, &aggregate3Result, "aggregate3", &calls); err != nil {
 		return nil, fmt.Errorf("failed to execute multicall: %w", err)
 	}
+	if len(aggregate3Result) == 0 {
+		return nil, fmt.Errorf("failed to get aggregate3 result")
+	}
 
-	// 解析结果
-	results := make([]bindings.Multicall3Result, len(out))
-	for i, v := range out {
-		results[i] = v.(bindings.Multicall3Result)
+	// 解析 aggregate3 结果
+	aggregate3Results, ok := aggregate3Result[0].([]struct {
+		Success    bool    "json:\"success\""
+		ReturnData []uint8 "json:\"returnData\""
+	})
+	if !ok {
+		return nil, fmt.Errorf("failed to parse aggregate3 result: %v", reflect.TypeOf(aggregate3Result[0]))
+	}
+
+	// 转换为 Multicall3Result 类型
+	results := make([]bindings.Multicall3Result, len(aggregate3Results))
+	for i, v := range aggregate3Results {
+		results[i] = bindings.Multicall3Result{
+			Success:    v.Success,
+			ReturnData: v.ReturnData,
+		}
 	}
 
 	// 解析每个用户的数据

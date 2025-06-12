@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"liquidation-bot/config"
+	"strings"
 	"sync"
-	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -52,14 +52,15 @@ func NewClient(logger *zap.Logger, chainConfigs map[string]config.ChainConfig, p
 		return nil, fmt.Errorf("failed to init chains: %w", err)
 	}
 
-	// 启动连接监控
-	go client.monitorConnections()
-
 	return client, nil
 }
 
 // initChain 初始化链
 func (c *Client) initChain(chain string) error {
+	if !strings.HasPrefix(c.chainConfigs[chain].RPCURL, "ws") {
+		return fmt.Errorf("chain %s rpc url is not a websocket url", chain)
+	}
+
 	// 创建 WebSocket 客户端
 	wsClient, err := ethclient.Dial(c.chainConfigs[chain].RPCURL)
 	if err != nil {
@@ -75,7 +76,7 @@ func (c *Client) initChain(chain string) error {
 	if err != nil {
 		return fmt.Errorf("failed to parse private key: %w", err)
 	}
-	c.logger.Info("chain liquiditor", zap.String("chain", chain), zap.String("liquiditor", crypto.PubkeyToAddress(key.PublicKey).Hex()))
+	c.logger.Info("chain liquiditor", zap.String("chain", chain), zap.Int("chainID", int(chainID.Int64())), zap.String("liquiditor", crypto.PubkeyToAddress(key.PublicKey).Hex()))
 
 	auth, err := bind.NewKeyedTransactorWithChainID(key, chainID)
 	if err != nil {
@@ -94,58 +95,6 @@ func (c *Client) initChain(chain string) error {
 	c.Unlock()
 
 	return nil
-}
-
-// monitorConnections 监控连接
-func (c *Client) monitorConnections() {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			if err := c.checkConnections(); err != nil {
-				c.logger.Error("failed to check connections", zap.Error(err))
-			}
-		case <-c.reconnect:
-			if err := c.checkConnections(); err != nil {
-				c.logger.Error("failed to check connections", zap.Error(err))
-			}
-		}
-	}
-}
-
-// checkConnections 检查连接
-func (c *Client) checkConnections() error {
-	c.RLock()
-	defer c.RUnlock()
-
-	for chain, client := range c.clients {
-		// 检查连接
-		_, err := client.BlockNumber(context.Background())
-		if err != nil {
-			c.logger.Error("connection lost", zap.String("chain", chain), zap.Error(err))
-			go c.reconnectChain(chain)
-		}
-	}
-
-	return nil
-}
-
-// reconnectChain 重连链
-func (c *Client) reconnectChain(chain string) {
-	c.Lock()
-	defer c.Unlock()
-
-	// 关闭旧连接
-	if client, ok := c.clients[chain]; ok {
-		client.Close()
-	}
-
-	// 重新初始化
-	if err := c.initChain(chain); err != nil {
-		c.logger.Error("failed to reconnect", zap.String("chain", chain), zap.Error(err))
-	}
 }
 
 // GetClient 获取客户端

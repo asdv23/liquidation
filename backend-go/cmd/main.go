@@ -23,9 +23,9 @@ import (
 func initLogger() (*zap.Logger, error) {
 	// 配置编码器
 	encoderConfig := zapcore.EncoderConfig{
-		TimeKey:        "ts",
+		// TimeKey:        "ts",
 		LevelKey:       "level",
-		NameKey:        "logger",
+		NameKey:        "chain",
 		CallerKey:      "caller",
 		FunctionKey:    zapcore.OmitKey,
 		MessageKey:     "msg",
@@ -45,7 +45,7 @@ func initLogger() (*zap.Logger, error) {
 	)
 
 	// 创建日志记录器
-	logger := zap.New(core, zap.AddCaller(), zap.AddStacktrace(zapcore.ErrorLevel))
+	logger := zap.New(core /*zap.AddCaller(),*/, zap.AddStacktrace(zapcore.ErrorLevel))
 	return logger, nil
 }
 
