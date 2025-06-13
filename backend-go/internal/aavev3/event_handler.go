@@ -9,39 +9,39 @@ import (
 )
 
 func (s *Service) handleEvents() error {
-	s.logger.Info("start to handle events", zap.String("aavev3_pool", s.contracts.Addresses[blockchain.ContractTypeAaveV3Pool].Hex()))
+	s.logger.Info("start to handle events", zap.String("aavev3_pool", s.chain.GetContracts().Addresses[blockchain.ContractTypeAaveV3Pool].Hex()))
 	opts := s.getWatchOpts()
 
 	borrowSink := make(chan *aavev3.PoolBorrow, 100)
-	borrowSub, err := s.contracts.AaveV3Pool.WatchBorrow(opts, borrowSink, nil, nil, nil)
+	borrowSub, err := s.chain.GetContracts().AaveV3Pool.WatchBorrow(opts, borrowSink, nil, nil, nil)
 	if err != nil {
 		return fmt.Errorf("failed to watch borrow events: %w", err)
 	}
 	defer borrowSub.Unsubscribe()
 
 	repaySink := make(chan *aavev3.PoolRepay, 100)
-	repaySub, err := s.contracts.AaveV3Pool.WatchRepay(opts, repaySink, nil, nil, nil)
+	repaySub, err := s.chain.GetContracts().AaveV3Pool.WatchRepay(opts, repaySink, nil, nil, nil)
 	if err != nil {
 		return fmt.Errorf("failed to watch repay events: %w", err)
 	}
 	defer repaySub.Unsubscribe()
 
 	supplySink := make(chan *aavev3.PoolSupply, 100)
-	supplySub, err := s.contracts.AaveV3Pool.WatchSupply(opts, supplySink, nil, nil, nil)
+	supplySub, err := s.chain.GetContracts().AaveV3Pool.WatchSupply(opts, supplySink, nil, nil, nil)
 	if err != nil {
 		return fmt.Errorf("failed to watch supply events: %w", err)
 	}
 	defer supplySub.Unsubscribe()
 
 	withdrawSink := make(chan *aavev3.PoolWithdraw, 100)
-	withdrawSub, err := s.contracts.AaveV3Pool.WatchWithdraw(opts, withdrawSink, nil, nil, nil)
+	withdrawSub, err := s.chain.GetContracts().AaveV3Pool.WatchWithdraw(opts, withdrawSink, nil, nil, nil)
 	if err != nil {
 		return fmt.Errorf("failed to watch withdraw events: %w", err)
 	}
 	defer withdrawSub.Unsubscribe()
 
 	liquidationSink := make(chan *aavev3.PoolLiquidationCall, 100)
-	liquidationSub, err := s.contracts.AaveV3Pool.WatchLiquidationCall(opts, liquidationSink, nil, nil, nil)
+	liquidationSub, err := s.chain.GetContracts().AaveV3Pool.WatchLiquidationCall(opts, liquidationSink, nil, nil, nil)
 	if err != nil {
 		return fmt.Errorf("failed to watch liquidation events: %w", err)
 	}
@@ -49,18 +49,8 @@ func (s *Service) handleEvents() error {
 
 	for {
 		select {
-		case borrowEvent := <-borrowSink:
-			s.handleBorrowEvent(borrowEvent)
-		case repayEvent := <-repaySink:
-			s.handleRepayEvent(repayEvent)
-		case supplyEvent := <-supplySink:
-			s.handleSupplyEvent(supplyEvent)
-		case withdrawEvent := <-withdrawSink:
-			s.handleWithdrawEvent(withdrawEvent)
-		case liquidationEvent := <-liquidationSink:
-			s.handleLiquidationEvent(liquidationEvent)
-		case <-s.ctx.Done():
-			return fmt.Errorf("context done: %w", s.ctx.Err())
+		case <-s.chain.Ctx.Done():
+			return fmt.Errorf("context done: %w", s.chain.Ctx.Err())
 		case err := <-borrowSub.Err():
 			return fmt.Errorf("failed to watch borrow events: %w", err)
 		case err := <-repaySub.Err():
@@ -71,6 +61,16 @@ func (s *Service) handleEvents() error {
 			return fmt.Errorf("failed to watch withdraw events: %w", err)
 		case err := <-liquidationSub.Err():
 			return fmt.Errorf("failed to watch liquidation events: %w", err)
+		case borrowEvent := <-borrowSink:
+			s.handleBorrowEvent(borrowEvent)
+		case repayEvent := <-repaySink:
+			s.handleRepayEvent(repayEvent)
+		case supplyEvent := <-supplySink:
+			s.handleSupplyEvent(supplyEvent)
+		case withdrawEvent := <-withdrawSink:
+			s.handleWithdrawEvent(withdrawEvent)
+		case liquidationEvent := <-liquidationSink:
+			s.handleLiquidationEvent(liquidationEvent)
 		}
 	}
 }
@@ -78,7 +78,7 @@ func (s *Service) handleEvents() error {
 func (s *Service) handleBorrowEvent(event *aavev3.PoolBorrow) {
 	s.logger.Info("borrow event", zap.Any("user", event.User.Hex()))
 	// create or update loan
-	if err := s.dbWrapper.CreateOrUpdateActiveLoan(s.chainName, event.User.Hex()); err != nil {
+	if err := s.dbWrapper.CreateOrUpdateActiveLoan(s.chain.ChainName, event.User.Hex()); err != nil {
 		s.logger.Error("failed to create or update loan", zap.Error(err), zap.String("user", event.User.Hex()))
 	}
 

@@ -25,7 +25,6 @@ type Config struct {
 // ChainConfig 链配置
 type ChainConfig struct {
 	RPCURL             string            `json:"rpcUrl"`
-	PoolAddress        string            `json:"poolAddress"`
 	GasLimit           uint64            `json:"gasLimit"`
 	GasPriceMultiplier float64           `json:"gasPriceMultiplier"`
 	ContractAddresses  map[string]string `json:"contractAddresses"`

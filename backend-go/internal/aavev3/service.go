@@ -3,7 +3,6 @@ package aavev3
 import (
 	"context"
 	"fmt"
-	"liquidation-bot/config"
 	"liquidation-bot/pkg/blockchain"
 	"sync"
 	"time"
@@ -32,36 +31,21 @@ type Service struct {
 	sync.RWMutex
 
 	logger               *zap.Logger
-	chainClient          *blockchain.Client
-	chainName            string
-	contracts            *blockchain.Contracts
+	chain                *blockchain.Chain
 	dbWrapper            *DBWrapper
 	liquidationInfoCache map[string]*LiquidationInfo
-	ctx                  context.Context
 }
 
 // NewService 创建新的借入发现服务
 func NewService(
-	logger *zap.Logger,
-	chainClient *blockchain.Client,
-	chainName string,
-	cfg *config.Config,
+	chain *blockchain.Chain,
 	dbWrapper *DBWrapper,
 ) (*Service, error) {
-	logger = logger.Named(chainName)
-	contracts, err := chainClient.GetContracts(chainName)
-	if err != nil {
-		logger.Error("failed to get contracts", zap.Error(err))
-		return nil, err
-	}
 	s := &Service{
-		logger:               logger,
-		chainClient:          chainClient,
-		chainName:            chainName,
-		contracts:            contracts,
+		logger:               chain.Logger.With(zap.String("service", "aavev3")),
+		chain:                chain,
 		dbWrapper:            dbWrapper,
 		liquidationInfoCache: make(map[string]*LiquidationInfo),
-		ctx:                  context.Background(),
 	}
 	return s, nil
 }
@@ -92,7 +76,7 @@ func (s *Service) startHealthFactorChecker() error {
 }
 
 func (s *Service) getCallOpts() (*bind.CallOpts, context.CancelFunc) {
-	ctx, cancel := context.WithTimeout(context.Background(), CallTimeout)
+	ctx, cancel := context.WithTimeout(s.chain.Ctx, CallTimeout)
 	return &bind.CallOpts{
 		Context: ctx,
 	}, cancel
@@ -102,6 +86,6 @@ func (s *Service) getWatchOpts() *bind.WatchOpts {
 	// todo - read start from db
 	return &bind.WatchOpts{
 		Start:   nil,
-		Context: s.ctx,
+		Context: s.chain.Ctx,
 	}
 }

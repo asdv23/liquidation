@@ -52,10 +52,15 @@ type Loan struct {
 
 // LiquidationInfo 清算信息
 type LiquidationInfo struct {
-	CollateralAsset  string
-	CollateralAmount *BigInt
-	DebtAsset        string
-	DebtAmount       *BigInt
+	TotalCollateralBase  *BigInt
+	TotalDebtBase        *BigInt
+	LiquidationThreshold *BigInt
+	CollateralAsset      string
+	CollateralAmount     *BigInt
+	CollateralAmountBase *BigInt
+	DebtAsset            string
+	DebtAmount           *BigInt
+	DebtAmountBase       *BigInt
 }
 
 func (l *Loan) BeforeCreate(tx *gorm.DB) error {

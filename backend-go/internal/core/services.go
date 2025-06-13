@@ -33,8 +33,14 @@ func NewServices(db *gorm.DB, cfg *config.Config, logger *zap.Logger) *Services 
 	}
 
 	aavev3Services := make(map[string]*aavev3.Service)
-	for chain := range cfg.Chains {
-		aavev3Service, err := aavev3.NewService(logger, chainClient, chain, cfg, dbWrapper)
+	for chainName := range cfg.Chains {
+		chain, err := chainClient.GetChain(chainName)
+		if err != nil {
+			logger.Error("failed to get chain", zap.Error(err))
+			os.Exit(1)
+		}
+
+		aavev3Service, err := aavev3.NewService(chain, dbWrapper)
 		if err != nil {
 			logger.Error("failed to create aavev3 service", zap.Error(err))
 			os.Exit(1)
@@ -54,7 +60,7 @@ func NewServices(db *gorm.DB, cfg *config.Config, logger *zap.Logger) *Services 
 				time.Sleep(5 * time.Second)
 			}
 		}()
-		aavev3Services[chain] = aavev3Service
+		aavev3Services[chainName] = aavev3Service
 	}
 
 	return &Services{

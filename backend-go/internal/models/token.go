@@ -12,6 +12,7 @@ type Token struct {
 	Address   string `gorm:"uniqueIndex:idx_chain_address"`
 	Symbol    string
 	Decimals  int
+	Price     float64
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }

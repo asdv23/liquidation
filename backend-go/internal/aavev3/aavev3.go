@@ -14,7 +14,7 @@ func (s *Service) getUserAccountData(user string) (*UserAccountData, error) {
 	defer cancel()
 
 	// 调用合约
-	result, err := s.contracts.AaveV3Pool.GetUserAccountData(opts, common.HexToAddress(user))
+	result, err := s.chain.GetContracts().AaveV3Pool.GetUserAccountData(opts, common.HexToAddress(user))
 	if err != nil {
 		return nil, fmt.Errorf("failed to call getUserAccountData: %w", err)
 	}
@@ -38,7 +38,7 @@ func (s *Service) getUserReserveData(asset string, user string) (*UserReserveDat
 	defer cancel()
 
 	// 调用合约
-	result, err := s.contracts.DataProvider.GetUserReserveData(opts, common.HexToAddress(asset), common.HexToAddress(user))
+	result, err := s.chain.GetContracts().DataProvider.GetUserReserveData(opts, common.HexToAddress(asset), common.HexToAddress(user))
 	if err != nil {
 		return nil, fmt.Errorf("failed to call getUserReserveData: %w", err)
 	}
@@ -64,7 +64,7 @@ func (s *Service) getReservesList() ([]common.Address, error) {
 	defer cancel()
 
 	// 调用合约
-	result, err := s.contracts.AaveV3Pool.GetReservesList(opts)
+	result, err := s.chain.GetContracts().AaveV3Pool.GetReservesList(opts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to call getReservesList: %w", err)
 	}
@@ -78,7 +78,7 @@ func (s *Service) getUserConfiguration(user string) (*aavev3.DataTypesUserConfig
 	defer cancel()
 
 	// 调用合约
-	result, err := s.contracts.AaveV3Pool.GetUserConfiguration(opts, common.HexToAddress(user))
+	result, err := s.chain.GetContracts().AaveV3Pool.GetUserConfiguration(opts, common.HexToAddress(user))
 	if err != nil {
 		return nil, fmt.Errorf("failed to call getUserConfiguration: %w", err)
 	}

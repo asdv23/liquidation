@@ -40,6 +40,7 @@ func initLogger() (*zap.Logger, error) {
 	// 创建核心
 	core := zapcore.NewCore(
 		zapcore.NewJSONEncoder(encoderConfig),
+		// zapcore.NewConsoleEncoder(encoderConfig),
 		zapcore.AddSync(os.Stdout),
 		zapcore.InfoLevel,
 	)
@@ -71,6 +72,7 @@ func main() {
 	}
 
 	// 初始化 Gin 路由
+	gin.SetMode(gin.ReleaseMode)
 	router := gin.New() // 使用 gin.New() 而不是 gin.Default()，因为我们要使用自定义的日志中间件
 
 	// 初始化服务

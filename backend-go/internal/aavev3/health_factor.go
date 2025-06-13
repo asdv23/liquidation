@@ -15,9 +15,9 @@ import (
 )
 
 func (s *Service) updateHealthFactorViaEvent(user string) error {
-	activeLoans, ok := s.dbWrapper.GetActiveLoans(s.chainName)
+	activeLoans, ok := s.dbWrapper.GetActiveLoans(s.chain.ChainName)
 	if !ok || len(activeLoans) == 0 {
-		s.logger.Info("no active loans", zap.String("chain", s.chainName))
+		s.logger.Info("no active loans", zap.String("chain", s.chain.ChainName))
 		return nil
 	}
 
@@ -33,7 +33,7 @@ const (
 )
 
 func (s *Service) checkHealthFactorsBatch() {
-	activeLoans, ok := s.dbWrapper.GetActiveLoans(s.chainName)
+	activeLoans, ok := s.dbWrapper.GetActiveLoans(s.chain.ChainName)
 	if !ok || len(activeLoans) == 0 {
 		s.logger.Info("no active loans")
 		return
@@ -59,7 +59,7 @@ func (s *Service) checkHealthFactorsBatch() {
 		batch := usersToCheck[i:end]
 		if err := s.processBatch(batch, activeLoans); err != nil {
 			s.logger.Error("Failed to process batch",
-				zap.String("chain", s.chainName),
+				zap.String("chain", s.chain.ChainName),
 				zap.Error(err))
 		}
 	}
@@ -75,9 +75,10 @@ func (s *Service) processBatch(batchUsers []string, activeLoans map[string]*mode
 	// 处理每个用户
 	var eg errgroup.Group
 	for _, user := range batchUsers {
+		user := user
 		accountData, ok := accountDataMap[user]
 		if !ok {
-			s.logger.Error("account data is nil", zap.String("chain", s.chainName), zap.String("user", user))
+			s.logger.Error("account data is nil", zap.String("chain", s.chain.ChainName), zap.String("user", user))
 			continue
 		}
 
@@ -91,7 +92,7 @@ func (s *Service) processBatch(batchUsers []string, activeLoans map[string]*mode
 
 func (s *Service) processUser(user string, accountData *UserAccountData, loan *models.Loan) error {
 	if loan == nil {
-		return s.dbWrapper.CreateOrUpdateActiveLoan(s.chainName, user)
+		return s.dbWrapper.CreateOrUpdateActiveLoan(s.chain.ChainName, user)
 	}
 
 	// 计算健康因子
@@ -105,7 +106,7 @@ func (s *Service) processUser(user string, accountData *UserAccountData, loan *m
 		s.logger.Info("health factor changed", zap.String("user", user), zap.Float64("lastHealthFactor", lastHealthFactor), zap.Float64("healthFactor", healthFactor))
 
 		// 更新 health factor 到数据库
-		if err := s.dbWrapper.UpdateActiveLoanHealthFactor(s.chainName, user, healthFactor); err != nil {
+		if err := s.dbWrapper.UpdateActiveLoanHealthFactor(s.chain.ChainName, user, healthFactor); err != nil {
 			return fmt.Errorf("failed to update loan health factor in database: %w", err)
 		}
 	}
@@ -147,7 +148,7 @@ func (s *Service) getUserAccountDataBatch(users []string) (map[string]*UserAccou
 		}
 
 		calls = append(calls, bindings.Multicall3Call3{
-			Target:       s.contracts.Addresses[blockchain.ContractTypeAaveV3Pool],
+			Target:       s.chain.GetContracts().Addresses[blockchain.ContractTypeAaveV3Pool],
 			AllowFailure: false,
 			CallData:     callData,
 		})
@@ -157,7 +158,7 @@ func (s *Service) getUserAccountDataBatch(users []string) (map[string]*UserAccou
 	callOpts, cancel := s.getCallOpts()
 	defer cancel()
 	var aggregate3Result []any
-	raw := &bindings.Multicall3Raw{Contract: s.contracts.Multicall3}
+	raw := &bindings.Multicall3Raw{Contract: s.chain.GetContracts().Multicall3}
 	if err := raw.Call(callOpts, &aggregate3Result, "aggregate3", &calls); err != nil {
 		return nil, fmt.Errorf("failed to execute multicall: %w", err)
 	}
