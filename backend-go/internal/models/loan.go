@@ -57,10 +57,20 @@ type LiquidationInfo struct {
 	LiquidationThreshold *BigInt
 	CollateralAsset      string
 	CollateralAmount     *BigInt
-	CollateralAmountBase *BigInt
+	CollateralAmountBase float64
 	DebtAsset            string
 	DebtAmount           *BigInt
-	DebtAmountBase       *BigInt
+	DebtAmountBase       float64
+}
+
+func (old *LiquidationInfo) Cmp(new *LiquidationInfo) bool {
+	if new == nil {
+		return false
+	}
+	return old.DebtAsset == new.DebtAsset &&
+		old.DebtAmount == new.DebtAmount &&
+		old.CollateralAsset == new.CollateralAsset &&
+		old.CollateralAmount == new.CollateralAmount
 }
 
 func (l *Loan) BeforeCreate(tx *gorm.DB) error {

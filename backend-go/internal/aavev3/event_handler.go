@@ -1,6 +1,7 @@
 package aavev3
 
 import (
+	"context"
 	"fmt"
 	aavev3 "liquidation-bot/bindings/aavev3"
 	"liquidation-bot/pkg/blockchain"
@@ -8,7 +9,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func (s *Service) handleEvents() error {
+func (s *Service) handleEvents(ctx context.Context) error {
 	s.logger.Info("start to handle events", zap.String("aavev3_pool", s.chain.GetContracts().Addresses[blockchain.ContractTypeAaveV3Pool].Hex()))
 	opts := s.getWatchOpts()
 
@@ -49,8 +50,8 @@ func (s *Service) handleEvents() error {
 
 	for {
 		select {
-		case <-s.chain.Ctx.Done():
-			return fmt.Errorf("context done: %w", s.chain.Ctx.Err())
+		case <-ctx.Done():
+			return fmt.Errorf("context done: %w", ctx.Err())
 		case err := <-borrowSub.Err():
 			return fmt.Errorf("failed to watch borrow events: %w", err)
 		case err := <-repaySub.Err():
@@ -86,6 +87,11 @@ func (s *Service) handleBorrowEvent(event *aavev3.PoolBorrow) {
 	if err := s.updateHealthFactorViaEvent(event.User.Hex()); err != nil {
 		s.logger.Error("failed to update health factor", zap.Error(err), zap.String("user", event.User.Hex()))
 	}
+
+	// update liquidation info
+	if err := s.updateLiquidationInfo(event.User.Hex()); err != nil {
+		s.logger.Error("failed to update liquidation info", zap.Error(err), zap.String("user", event.User.Hex()))
+	}
 }
 
 func (s *Service) handleRepayEvent(event *aavev3.PoolRepay) {
@@ -93,6 +99,11 @@ func (s *Service) handleRepayEvent(event *aavev3.PoolRepay) {
 	// update health factor
 	if err := s.updateHealthFactorViaEvent(event.User.Hex()); err != nil {
 		s.logger.Error("failed to update health factor", zap.Error(err), zap.String("user", event.User.Hex()))
+	}
+
+	// update liquidation info
+	if err := s.updateLiquidationInfo(event.User.Hex()); err != nil {
+		s.logger.Error("failed to update liquidation info", zap.Error(err), zap.String("user", event.User.Hex()))
 	}
 }
 
@@ -103,6 +114,11 @@ func (s *Service) handleSupplyEvent(event *aavev3.PoolSupply) {
 	if err := s.updateHealthFactorViaEvent(event.User.Hex()); err != nil {
 		s.logger.Error("failed to update health factor", zap.Error(err), zap.String("user", event.User.Hex()))
 	}
+
+	// update liquidation info
+	if err := s.updateLiquidationInfo(event.User.Hex()); err != nil {
+		s.logger.Error("failed to update liquidation info", zap.Error(err), zap.String("user", event.User.Hex()))
+	}
 }
 
 func (s *Service) handleWithdrawEvent(event *aavev3.PoolWithdraw) {
@@ -112,6 +128,11 @@ func (s *Service) handleWithdrawEvent(event *aavev3.PoolWithdraw) {
 	if err := s.updateHealthFactorViaEvent(event.User.Hex()); err != nil {
 		s.logger.Error("failed to update health factor", zap.Error(err), zap.String("user", event.User.Hex()))
 	}
+
+	// update liquidation info
+	if err := s.updateLiquidationInfo(event.User.Hex()); err != nil {
+		s.logger.Error("failed to update liquidation info", zap.Error(err), zap.String("user", event.User.Hex()))
+	}
 }
 
 func (s *Service) handleLiquidationEvent(event *aavev3.PoolLiquidationCall) {
@@ -120,5 +141,10 @@ func (s *Service) handleLiquidationEvent(event *aavev3.PoolLiquidationCall) {
 	// update health factor
 	if err := s.updateHealthFactorViaEvent(event.User.Hex()); err != nil {
 		s.logger.Error("failed to update health factor", zap.Error(err), zap.String("user", event.User.Hex()))
+	}
+
+	// update liquidation info
+	if err := s.updateLiquidationInfo(event.User.Hex()); err != nil {
+		s.logger.Error("failed to update liquidation info", zap.Error(err), zap.String("user", event.User.Hex()))
 	}
 }

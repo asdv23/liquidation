@@ -5,7 +5,6 @@ import (
 	"liquidation-bot/internal/aavev3"
 	"liquidation-bot/pkg/blockchain"
 	"os"
-	"time"
 
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -45,21 +44,6 @@ func NewServices(db *gorm.DB, cfg *config.Config, logger *zap.Logger) *Services 
 			logger.Error("failed to create aavev3 service", zap.Error(err))
 			os.Exit(1)
 		}
-
-		go func() {
-			retries := 0
-			for {
-				if err := aavev3Service.Initialize(); err == nil {
-					break
-				}
-				retries++
-				if retries > 3 {
-					logger.Error("failed to initialize aavev3 service", zap.Error(err))
-					os.Exit(1)
-				}
-				time.Sleep(5 * time.Second)
-			}
-		}()
 		aavev3Services[chainName] = aavev3Service
 	}
 

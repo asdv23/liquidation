@@ -1,5 +1,18 @@
 package aavev3
 
+import (
+	"fmt"
+	aavev3 "liquidation-bot/bindings/aavev3"
+	bindings "liquidation-bot/bindings/common"
+	"liquidation-bot/internal/models"
+	"liquidation-bot/internal/utils"
+	"liquidation-bot/pkg/blockchain"
+	"math/big"
+
+	"github.com/ethereum/go-ethereum/common"
+	"go.uber.org/zap"
+)
+
 // import (
 // 	"fmt"
 // 	"math/big"
@@ -87,33 +100,98 @@ package aavev3
 // 	return nil
 // }
 
-// func (s *Service) findBestLiquidationPair(info *LiquidationInfo) (*LiquidationPair, error) {
-// 	var bestPair *LiquidationPair
-// 	var maxProfit *big.Int
+func (s *Service) updateLiquidationInfo(user string) error {
+	oldLiquidationInfo, err := s.dbWrapper.GetLiquidationInfo(s.chain.ChainName, user)
+	if err != nil {
+		return fmt.Errorf("failed to get liquidation info: %w", err)
+	}
+	liquidationInfo, err := s.findBestLiquidationInfo(user)
+	if err != nil {
+		return fmt.Errorf("failed to find best liquidation info: %w", err)
+	}
+	if !liquidationInfo.Cmp(oldLiquidationInfo) {
+		s.logger.Info("liquidation info changed", zap.String("user", user), zap.Any("old", oldLiquidationInfo), zap.Any("new", oldLiquidationInfo))
+	}
 
-// 	// 遍历所有可能的清算对
-// 	for _, collateral := range info.CollateralAssets {
-// 		for _, debt := range info.DebtAssets {
-// 			// 计算清算收益
-// 			profit, err := s.calculateLiquidationProfit(info, collateral, debt)
-// 			if err != nil {
-// 				continue
-// 			}
+	if err := s.dbWrapper.UpdateActiveLoanLiquidationInfo(s.chain.ChainName, user, liquidationInfo); err != nil {
+		return fmt.Errorf("failed to update loan liquidation info: %w", err)
+	}
 
-// 			// 更新最优对
-// 			if bestPair == nil || profit.Cmp(maxProfit) > 0 {
-// 				bestPair = &LiquidationPair{
-// 					CollateralAsset: collateral,
-// 					DebtAsset:       debt,
-// 					Profit:          profit,
-// 				}
-// 				maxProfit = profit
-// 			}
-// 		}
-// 	}
+	return nil
+}
 
-// 	return bestPair, nil
-// }
+func (s *Service) findBestLiquidationInfo(user string) (*models.LiquidationInfo, error) {
+	userConfig, err := s.getUserConfiguration(user)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user configuration: %w", err)
+	}
+	abi, err := aavev3.AaveProtocolDataProviderMetaData.GetAbi()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get abi: %w", err)
+	}
+	target := s.chain.GetContracts().Addresses[blockchain.ContractTypeDataProvider]
+
+	// 遍历所有可能的清算对
+	getUserReserveDataCalls := make([]bindings.Multicall3Call3, 0)
+	for reserveIndex, reserve := range s.reservesList {
+		if isBorrowing(userConfig, reserveIndex) || isUsingAsCollateral(userConfig, reserveIndex) {
+			callData, err := abi.Pack("getUserReserveData", reserve, common.HexToAddress(user))
+			if err != nil {
+				return nil, fmt.Errorf("failed to pack getUserReserveData call: %w", err)
+			}
+			getUserReserveDataCalls = append(getUserReserveDataCalls, bindings.Multicall3Call3{
+				Target:   target,
+				CallData: callData,
+			})
+		}
+	}
+
+	// 执行模拟调用
+	callOpts, cancel := s.getCallOpts()
+	defer cancel()
+	results, err := utils.Aggregate3(callOpts, s.chain.GetContracts().Multicall3, getUserReserveDataCalls)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse aggregate3 result: %w", err)
+	}
+
+	var liquidationInfo models.LiquidationInfo
+	for i, result := range results {
+		if !result.Success {
+			continue
+		}
+		var userReserveData UserReserveData
+		if err := abi.UnpackIntoInterface(&userReserveData, "getUserReserveData", result.ReturnData); err != nil {
+			return nil, fmt.Errorf("failed to unpack user reserve data: %w", err)
+		}
+
+		asset := s.reservesList[i]
+		token, err := s.dbWrapper.GetTokenInfo(s.chain.ChainName, asset.Hex())
+		if err != nil {
+			return nil, fmt.Errorf("failed to get token info: %w", err)
+		}
+		if isBorrowing(userConfig, i) {
+			debt := big.NewInt(0).Add(userReserveData.CurrentStableDebt, userReserveData.CurrentVariableDebt)
+			base := amountToUSD(debt, token.Decimals, (*big.Int)(token.Price))
+			if base > liquidationInfo.DebtAmountBase {
+				liquidationInfo.DebtAmountBase = base
+				liquidationInfo.DebtAmount = (*models.BigInt)(debt)
+				liquidationInfo.DebtAsset = asset.Hex()
+			}
+		}
+
+		if isUsingAsCollateral(userConfig, i) {
+			collateral := big.NewInt(0).Set(userReserveData.CurrentATokenBalance)
+			base := amountToUSD(collateral, token.Decimals, (*big.Int)(token.Price))
+			if base > liquidationInfo.CollateralAmountBase {
+				liquidationInfo.CollateralAmountBase = base
+				liquidationInfo.CollateralAmount = (*models.BigInt)(collateral)
+				liquidationInfo.CollateralAsset = asset.Hex()
+			}
+		}
+	}
+
+	return &liquidationInfo, nil
+}
 
 // func (s *Service) calculateLiquidationProfit(
 // 	info *LiquidationInfo,

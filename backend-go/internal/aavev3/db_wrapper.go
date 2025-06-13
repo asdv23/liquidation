@@ -1,8 +1,10 @@
 package aavev3
 
 import (
+	"context"
 	"fmt"
 	"liquidation-bot/internal/models"
+	"math/big"
 	"sync"
 
 	"golang.org/x/sync/errgroup"
@@ -12,30 +14,32 @@ import (
 type DBWrapper struct {
 	sync.RWMutex
 
-	db          *gorm.DB
-	tokenCache  map[string]map[string]*models.Token
-	activeLoans map[string]map[string]*models.Loan
+	db           *gorm.DB
+	tokens       map[string]map[string]*models.Token
+	activeLoans  map[string]map[string]*models.Loan
+	userReserves map[string]map[string][]*models.Reserve
 }
 
 func NewDBWrapper(db *gorm.DB) (*DBWrapper, error) {
-	w := &DBWrapper{db: db, tokenCache: make(map[string]map[string]*models.Token), activeLoans: make(map[string]map[string]*models.Loan)}
-	var eg errgroup.Group
-	eg.Go(w.loadTokenCache)
+	w := &DBWrapper{db: db, tokens: make(map[string]map[string]*models.Token), activeLoans: make(map[string]map[string]*models.Loan)}
+	eg, _ := errgroup.WithContext(context.Background())
+	eg.Go(w.loadTokens)
 	eg.Go(w.loadActiveLoans)
+	eg.Go(w.loadUserReserves)
 	return w, eg.Wait()
 }
 
-func (w *DBWrapper) loadTokenCache() error {
+func (w *DBWrapper) loadTokens() error {
 	var tokens []models.Token
 	if err := w.db.Find(&tokens).Error; err != nil {
 		return fmt.Errorf("failed to load tokens: %w", err)
 	}
 
 	for _, token := range tokens {
-		if w.tokenCache[token.ChainName] == nil {
-			w.tokenCache[token.ChainName] = make(map[string]*models.Token)
+		if w.tokens[token.ChainName] == nil {
+			w.tokens[token.ChainName] = make(map[string]*models.Token)
 		}
-		w.tokenCache[token.ChainName][token.Address] = &token
+		w.tokens[token.ChainName][token.Address] = &token
 	}
 	return nil
 }
@@ -55,6 +59,21 @@ func (w *DBWrapper) loadActiveLoans() error {
 	return nil
 }
 
+func (w *DBWrapper) loadUserReserves() error {
+	var reserves []models.Reserve
+	if err := w.db.Find(&reserves).Error; err != nil {
+		return fmt.Errorf("failed to load user reserves: %w", err)
+	}
+
+	for _, reserve := range reserves {
+		if w.userReserves[reserve.ChainName] == nil {
+			w.userReserves[reserve.ChainName] = make(map[string][]*models.Reserve)
+		}
+		w.userReserves[reserve.ChainName][reserve.User] = append(w.userReserves[reserve.ChainName][reserve.User], &reserve)
+	}
+	return nil
+}
+
 func (w *DBWrapper) GetDB() *gorm.DB {
 	return w.db
 }
@@ -63,14 +82,14 @@ func (w *DBWrapper) GetTokenInfo(chainName string, address string) (*models.Toke
 	w.RLock()
 	defer w.RUnlock()
 
-	token, ok := w.tokenCache[chainName][address]
+	token, ok := w.tokens[chainName][address]
 	if !ok {
 		return nil, fmt.Errorf("token not found")
 	}
 	return token, nil
 }
 
-func (w *DBWrapper) AddTokenInfo(chainName string, address string, symbol string, decimals int) (*models.Token, error) {
+func (w *DBWrapper) AddTokenInfo(chainName string, address string, symbol string, decimals, price *big.Int) (*models.Token, error) {
 	w.Lock()
 	defer w.Unlock()
 
@@ -78,15 +97,18 @@ func (w *DBWrapper) AddTokenInfo(chainName string, address string, symbol string
 		ChainName: chainName,
 		Address:   address,
 		Symbol:    symbol,
-		Decimals:  decimals,
+		Decimals:  int(decimals.Int64()),
+		Price:     (*models.BigInt)(price),
 	}
-	if err := w.db.Create(&token).Error; err != nil {
+	if err := w.db.Where(&models.Token{ChainName: chainName, Address: address}).
+		Assign(token).
+		FirstOrCreate(&token).Error; err != nil {
 		return nil, fmt.Errorf("failed to add token info: %w", err)
 	}
-	if w.tokenCache[chainName] == nil {
-		w.tokenCache[chainName] = make(map[string]*models.Token)
+	if w.tokens[chainName] == nil {
+		w.tokens[chainName] = make(map[string]*models.Token)
 	}
-	w.tokenCache[chainName][address] = token
+	w.tokens[chainName][address] = token
 
 	return token, nil
 }
@@ -127,4 +149,40 @@ func (w *DBWrapper) UpdateActiveLoanHealthFactor(chainName string, user string, 
 	w.activeLoans[chainName][user].HealthFactor = healthFactor
 
 	return nil
+}
+
+func (w *DBWrapper) UpdateActiveLoanLiquidationInfo(chainName, user string, liquidationInfo *models.LiquidationInfo) error {
+	w.Lock()
+	defer w.Unlock()
+
+	loan, ok := w.activeLoans[chainName][user]
+	if !ok {
+		return fmt.Errorf("active loan not found")
+	}
+	loan.LiquidationInfo = liquidationInfo
+
+	if err := w.db.Save(loan).Error; err != nil {
+		return fmt.Errorf("failed to save active loan: %w", err)
+	}
+
+	return nil
+}
+
+func (w *DBWrapper) GetUserReserves(chainName string, user string) ([]*models.Reserve, bool) {
+	w.RLock()
+	defer w.RUnlock()
+
+	reserves, ok := w.userReserves[chainName][user]
+	return reserves, ok
+}
+
+func (w *DBWrapper) GetLiquidationInfo(chainName string, user string) (*models.LiquidationInfo, error) {
+	w.RLock()
+	defer w.RUnlock()
+
+	loan, ok := w.activeLoans[chainName][user]
+	if !ok {
+		return &models.LiquidationInfo{}, nil
+	}
+	return loan.LiquidationInfo, nil
 }

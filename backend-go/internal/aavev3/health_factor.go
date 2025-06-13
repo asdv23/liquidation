@@ -5,8 +5,8 @@ import (
 	aavev3 "liquidation-bot/bindings/aavev3"
 	bindings "liquidation-bot/bindings/common"
 	"liquidation-bot/internal/models"
+	"liquidation-bot/internal/utils"
 	"liquidation-bot/pkg/blockchain"
-	"reflect"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
@@ -73,7 +73,7 @@ func (s *Service) processBatch(batchUsers []string, activeLoans map[string]*mode
 	}
 
 	// 处理每个用户
-	var eg errgroup.Group
+	eg, _ := errgroup.WithContext(s.chain.Ctx)
 	for _, user := range batchUsers {
 		user := user
 		accountData, ok := accountDataMap[user]
@@ -160,31 +160,9 @@ func (s *Service) getUserAccountDataBatch(users []string) (map[string]*UserAccou
 	// 执行模拟调用
 	callOpts, cancel := s.getCallOpts()
 	defer cancel()
-	var aggregate3Result []any
-	raw := &bindings.Multicall3Raw{Contract: s.chain.GetContracts().Multicall3}
-	if err := raw.Call(callOpts, &aggregate3Result, "aggregate3", &calls); err != nil {
-		return nil, fmt.Errorf("failed to execute multicall: %w", err)
-	}
-	if len(aggregate3Result) == 0 {
-		return nil, fmt.Errorf("failed to get aggregate3 result")
-	}
-
-	// 解析 aggregate3 结果
-	aggregate3Results, ok := aggregate3Result[0].([]struct {
-		Success    bool    "json:\"success\""
-		ReturnData []uint8 "json:\"returnData\""
-	})
-	if !ok {
-		return nil, fmt.Errorf("failed to parse aggregate3 result: %v", reflect.TypeOf(aggregate3Result[0]))
-	}
-
-	// 转换为 Multicall3Result 类型
-	results := make([]bindings.Multicall3Result, len(aggregate3Results))
-	for i, v := range aggregate3Results {
-		results[i] = bindings.Multicall3Result{
-			Success:    v.Success,
-			ReturnData: v.ReturnData,
-		}
+	results, err := utils.Aggregate3(callOpts, s.chain.GetContracts().Multicall3, calls)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse aggregate3 result: %w", err)
 	}
 
 	// 解析每个用户的数据

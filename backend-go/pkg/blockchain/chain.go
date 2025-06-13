@@ -50,7 +50,7 @@ func NewChain(ctx context.Context, logger *zap.Logger, chainName string, private
 	return c, nil
 }
 
-type ReconnectFn func() error
+type ReconnectFn func()
 
 func (c *Chain) Register(reconnectFn ReconnectFn) {
 	c.Lock()
@@ -146,11 +146,9 @@ func (c *Chain) reconnect() {
 				}
 				c.Logger.Info("Reconnected successfully")
 				for _, fn := range c.reconnectFns {
-					go func(fn ReconnectFn) {
-						if err := fn(); err != nil {
-							c.Logger.Error("Reconnect function failed", zap.Error(err))
-						}
-					}(fn)
+					fn := fn
+					c.Logger.Info("Reconnecting", zap.String("fn", fmt.Sprintf("%T", fn)))
+					go fn()
 				}
 				break
 			}

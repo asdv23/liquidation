@@ -8,11 +8,11 @@ import (
 
 type Token struct {
 	ID        uint   `gorm:"primarykey"`
-	ChainName string `gorm:"index"`
+	ChainName string `gorm:"uniqueIndex:idx_chain_address"`
 	Address   string `gorm:"uniqueIndex:idx_chain_address"`
 	Symbol    string
 	Decimals  int
-	Price     float64
+	Price     *BigInt
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
