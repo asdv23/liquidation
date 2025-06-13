@@ -34,5 +34,6 @@ func autoMigrate(db *gorm.DB) error {
 	return db.AutoMigrate(
 		&models.Loan{},
 		&models.Token{},
+		&models.Reserve{},
 	)
 }

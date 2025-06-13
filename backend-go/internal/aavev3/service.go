@@ -47,6 +47,7 @@ func NewService(
 		dbWrapper:            dbWrapper,
 		liquidationInfoCache: make(map[string]*LiquidationInfo),
 	}
+	chain.Register(s.handleEvents)
 	return s, nil
 }
 

@@ -23,8 +23,9 @@ type Chain struct {
 	Cfg       config.ChainConfig
 	ChainName string
 
-	reconnectCh chan struct{}
-	privateKey  string
+	reconnectCh  chan struct{}
+	reconnectFns []ReconnectFn
+	privateKey   string
 
 	client    *ethclient.Client
 	auth      *bind.TransactOpts
@@ -47,6 +48,15 @@ func NewChain(ctx context.Context, logger *zap.Logger, chainName string, private
 
 	go c.reconnect()
 	return c, nil
+}
+
+type ReconnectFn func() error
+
+func (c *Chain) Register(reconnectFn ReconnectFn) {
+	c.Lock()
+	defer c.Unlock()
+
+	c.reconnectFns = append(c.reconnectFns, reconnectFn)
 }
 
 func (c *Chain) connect() error {
@@ -135,6 +145,13 @@ func (c *Chain) reconnect() {
 					continue
 				}
 				c.Logger.Info("Reconnected successfully")
+				for _, fn := range c.reconnectFns {
+					go func(fn ReconnectFn) {
+						if err := fn(); err != nil {
+							c.Logger.Error("Reconnect function failed", zap.Error(err))
+						}
+					}(fn)
+				}
 				break
 			}
 			c.Logger.Error("Failed to reconnect after max attempts, retrying later...", zap.Int("maxAttempts", maxAttempts))
