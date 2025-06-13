@@ -76,7 +76,7 @@ func (s *Service) handleEvents() error {
 }
 
 func (s *Service) handleBorrowEvent(event *aavev3.PoolBorrow) {
-	s.logger.Info("borrow event", zap.Any("user", event.User.Hex()))
+	s.logger.Info("borrow event 😄", zap.Any("user", event.User.Hex()))
 	// create or update loan
 	if err := s.dbWrapper.CreateOrUpdateActiveLoan(s.chain.ChainName, event.User.Hex()); err != nil {
 		s.logger.Error("failed to create or update loan", zap.Error(err), zap.String("user", event.User.Hex()))
@@ -89,7 +89,7 @@ func (s *Service) handleBorrowEvent(event *aavev3.PoolBorrow) {
 }
 
 func (s *Service) handleRepayEvent(event *aavev3.PoolRepay) {
-	s.logger.Info("repay event", zap.Any("user", event.User.Hex()))
+	s.logger.Info("repay event 😢", zap.Any("user", event.User.Hex()))
 	// update health factor
 	if err := s.updateHealthFactorViaEvent(event.User.Hex()); err != nil {
 		s.logger.Error("failed to update health factor", zap.Error(err), zap.String("user", event.User.Hex()))
@@ -97,7 +97,7 @@ func (s *Service) handleRepayEvent(event *aavev3.PoolRepay) {
 }
 
 func (s *Service) handleSupplyEvent(event *aavev3.PoolSupply) {
-	s.logger.Info("supply event", zap.Any("user", event.User.Hex()))
+	s.logger.Info("supply event 👀", zap.Any("user", event.User.Hex()))
 
 	// update health factor
 	if err := s.updateHealthFactorViaEvent(event.User.Hex()); err != nil {
@@ -106,7 +106,7 @@ func (s *Service) handleSupplyEvent(event *aavev3.PoolSupply) {
 }
 
 func (s *Service) handleWithdrawEvent(event *aavev3.PoolWithdraw) {
-	s.logger.Info("withdraw event", zap.Any("user", event.User.Hex()))
+	s.logger.Info("withdraw event 🤨", zap.Any("user", event.User.Hex()))
 
 	// update health factor
 	if err := s.updateHealthFactorViaEvent(event.User.Hex()); err != nil {
@@ -115,7 +115,7 @@ func (s *Service) handleWithdrawEvent(event *aavev3.PoolWithdraw) {
 }
 
 func (s *Service) handleLiquidationEvent(event *aavev3.PoolLiquidationCall) {
-	s.logger.Info("liquidation event", zap.Any("user", event.User.Hex()))
+	s.logger.Info("liquidation event 🤩", zap.Any("user", event.User.Hex()))
 
 	// update health factor
 	if err := s.updateHealthFactorViaEvent(event.User.Hex()); err != nil {

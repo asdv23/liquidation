@@ -11,8 +11,8 @@ func formatHealthFactor(healthFactor *big.Int) float64 {
 	}
 
 	// 将健康因子转换为浮点数
-	f := new(big.Float).SetInt(healthFactor)
-	f.Quo(f, new(big.Float).SetInt(big.NewInt(1e18)))
+	f := new(big.Float).SetUint64(healthFactor.Uint64())
+	f.Quo(f, new(big.Float).SetUint64(1e18))
 	result, _ := f.Float64()
 	return result
 }

@@ -1,6 +1,7 @@
 package aavev3
 
 import (
+	"fmt"
 	"math/big"
 	"time"
 )
@@ -20,6 +21,26 @@ type UserAccountData struct {
 	CurrentLiquidationThreshold *big.Int
 	Ltv                         *big.Int
 	HealthFactor                *big.Int
+}
+
+// (vars.totalCollateralInBaseCurrency.percentMul(vars.avgLiquidationThreshold)).wadDiv(
+//
+//	    vars.totalDebtInBaseCurrencyvars.healthFactor = (vars.totalDebtInBaseCurrency == 0)
+//		? type(uint256).max
+//		: (vars.totalCollateralInBaseCurrency.percentMul(vars.avgLiquidationThreshold)).wadDiv(
+//		  vars.totalDebtInBaseCurrency
+//		);
+//
+// 计算手算的健康因子和合约里是否一致
+func (uad *UserAccountData) checkCalcHealthFactor(healthFactor float64) (float64, bool) {
+	x := new(big.Int)
+	calcHealthFactor := formatHealthFactor(x.Lsh(big.NewInt(1), 256).Sub(x, big.NewInt(1)))
+	if uad.TotalDebtBase.Sign() != 0 {
+		y := new(big.Int)
+		y = y.Mul(uad.TotalCollateralBase, uad.CurrentLiquidationThreshold).Mul(y, big.NewInt(1e14)).Div(y, uad.TotalDebtBase)
+		calcHealthFactor = formatHealthFactor(y)
+	}
+	return calcHealthFactor, fmt.Sprintf("%0.5f", calcHealthFactor) == fmt.Sprintf("%0.5f", healthFactor)
 }
 
 // uint256 currentATokenBalance,

@@ -100,6 +100,9 @@ func (s *Service) processUser(user string, accountData *UserAccountData, loan *m
 	if healthFactor == 0 {
 		return nil
 	}
+	if calcHealthFactor, ok := accountData.checkCalcHealthFactor(healthFactor); !ok {
+		s.logger.Error("health factor mismatch ❌", zap.String("user", user), zap.Float64("healthFactor", healthFactor), zap.Float64("calcHealthFactor", calcHealthFactor))
+	}
 
 	// 检查并更新贷款信息
 	if lastHealthFactor := loan.HealthFactor; lastHealthFactor != healthFactor {
