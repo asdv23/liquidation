@@ -2,6 +2,7 @@ package aavev3
 
 import (
 	"fmt"
+	"liquidation-bot/internal/models"
 	"math/big"
 	"time"
 )
@@ -129,4 +130,10 @@ type UserAsset struct {
 // ReserveConfiguration 储备配置
 type ReserveConfiguration struct {
 	Data *big.Int
+}
+
+type UpdateLiquidationInfo struct {
+	User            string
+	HealthFactor    float64
+	LiquidationInfo *models.LiquidationInfo
 }

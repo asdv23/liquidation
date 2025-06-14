@@ -4,6 +4,9 @@ import (
 	"fmt"
 
 	aavev3 "liquidation-bot/bindings/aavev3"
+	bindings "liquidation-bot/bindings/common"
+	"liquidation-bot/internal/utils"
+	"liquidation-bot/pkg/blockchain"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -84,4 +87,51 @@ func (s *Service) getUserConfiguration(user string) (*aavev3.DataTypesUserConfig
 	}
 
 	return &result, nil
+}
+
+func (s *Service) getUserConfigurationForBatch(users []string) ([]*aavev3.DataTypesUserConfigurationMap, error) {
+	target := s.chain.GetContracts().Addresses[blockchain.ContractTypeAaveV3Pool]
+	abi, err := aavev3.PoolMetaData.GetAbi()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get abi: %w", err)
+	}
+
+	calls := make([]bindings.Multicall3Call3, 0)
+	for _, user := range users {
+		callData, err := abi.Pack("getUserConfiguration", common.HexToAddress(user))
+		if err != nil {
+			return nil, fmt.Errorf("failed to pack call data: %w", err)
+		}
+
+		call := bindings.Multicall3Call3{
+			Target:   target,
+			CallData: callData,
+		}
+
+		calls = append(calls, call)
+	}
+
+	// 准备调用参数
+	opts, cancel := s.getCallOpts()
+	defer cancel()
+	results, err := utils.Aggregate3(opts, s.chain.GetContracts().Multicall3, calls)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call aggregate: %w", err)
+	}
+
+	userConfigs := make([]*aavev3.DataTypesUserConfigurationMap, 0)
+	for _, result := range results {
+		var userConfig struct {
+			Data aavev3.DataTypesUserConfigurationMap
+		}
+		if err := abi.UnpackIntoInterface(&userConfig, "getUserConfiguration", result.ReturnData); err != nil {
+			return nil, fmt.Errorf("failed to unpack user configuration: %w", err)
+		}
+
+		userConfigs = append(userConfigs, &aavev3.DataTypesUserConfigurationMap{
+			Data: userConfig.Data.Data,
+		})
+	}
+
+	return userConfigs, nil
 }

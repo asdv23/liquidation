@@ -12,7 +12,6 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/zap"
-	"golang.org/x/sync/errgroup"
 )
 
 func (s *Service) updateHealthFactorViaEvent(user string, loan *models.Loan) error {
@@ -72,61 +71,63 @@ func (s *Service) processBatch(batchUsers []string, activeLoans map[string]*mode
 	}
 
 	// 处理每个用户
-	var eg errgroup.Group
+	deactivateUsers := make([]string, 0)
+	liquidationInfos := make([]*UpdateLiquidationInfo, 0)
 	for _, user := range batchUsers {
-		user := user
+		loan := activeLoans[user]
 		accountData, ok := accountDataMap[user]
 		if !ok {
 			s.logger.Error("account data is nil", zap.String("chain", s.chain.ChainName), zap.String("user", user))
 			continue
 		}
 
-		eg.Go(func() error {
-			return s.processUser(user, accountData, activeLoans[user])
+		if debtUSD := big.NewFloat(0).Quo(big.NewFloat(0).SetInt(accountData.TotalDebtBase), USD_DECIMALS); debtUSD.Cmp(MIN_DEBT_USD) < 0 {
+			s.logger.Info("total debt base is less than MIN_DEBT_USD", zap.String("user", user), zap.Any("debtUSD", debtUSD), zap.Any("minDebtUSD", MIN_DEBT_USD))
+			deactivateUsers = append(deactivateUsers, user)
+			continue
+		}
+		// 计算健康因子
+		healthFactor := formatHealthFactor(accountData.HealthFactor)
+		if healthFactor == 0 {
+			continue
+		}
+		if calcHealthFactor, ok := accountData.checkCalcHealthFactor(healthFactor); !ok {
+			s.logger.Error("health factor mismatch ❌", zap.String("user", user), zap.Float64("healthFactor", healthFactor), zap.Float64("calcHealthFactor", calcHealthFactor))
+		}
+
+		// 检查并更新贷款信息
+		if lastHealthFactor := loan.HealthFactor; lastHealthFactor == healthFactor {
+			continue
+		}
+		s.logger.Info("health factor changed", zap.String("user", user), zap.Float64("lastHealthFactor", loan.HealthFactor), zap.Float64("healthFactor", healthFactor))
+
+		liquidationInfos = append(liquidationInfos, &UpdateLiquidationInfo{
+			User:         user,
+			HealthFactor: healthFactor,
+			LiquidationInfo: &models.LiquidationInfo{
+				TotalCollateralBase:  models.NewBigInt(accountData.TotalCollateralBase),
+				TotalDebtBase:        models.NewBigInt(accountData.TotalDebtBase),
+				LiquidationThreshold: models.NewBigInt(accountData.CurrentLiquidationThreshold),
+			},
 		})
 	}
 
-	return eg.Wait()
-}
-
-func (s *Service) processUser(user string, accountData *UserAccountData, loan *models.Loan) error {
-	if debtUSD := big.NewFloat(0).Quo(big.NewFloat(0).SetInt(accountData.TotalDebtBase), USD_DECIMALS); debtUSD.Cmp(MIN_DEBT_USD) < 0 {
-		s.logger.Info("total debt base is less than MIN_DEBT_USD", zap.String("user", user), zap.Any("debtUSD", debtUSD), zap.Any("minDebtUSD", MIN_DEBT_USD))
-		return s.dbWrapper.DeactivateActiveLoan(s.chain.ChainName, user)
-	}
-	// 计算健康因子
-	healthFactor := formatHealthFactor(accountData.HealthFactor)
-	if healthFactor == 0 {
-		return nil
-	}
-	if calcHealthFactor, ok := accountData.checkCalcHealthFactor(healthFactor); !ok {
-		s.logger.Error("health factor mismatch ❌", zap.String("user", user), zap.Float64("healthFactor", healthFactor), zap.Float64("calcHealthFactor", calcHealthFactor))
-	}
-
-	// 检查并更新贷款信息
-	if lastHealthFactor := loan.HealthFactor; lastHealthFactor != healthFactor {
-		s.logger.Info("health factor changed", zap.String("user", user), zap.Float64("lastHealthFactor", lastHealthFactor), zap.Float64("healthFactor", healthFactor))
-
-		// 更新 health factor 到数据库
-		if err := s.dbWrapper.UpdateActiveLoanHealthFactor(s.chain.ChainName, user, healthFactor); err != nil {
-			return fmt.Errorf("failed to update loan health factor in database: %w", err)
+	if len(deactivateUsers) > 0 {
+		s.logger.Info("deactivate users", zap.Any("users", len(deactivateUsers)))
+		if err := s.dbWrapper.DeactivateActiveLoan(s.chain.ChainName, deactivateUsers); err != nil {
+			return fmt.Errorf("failed to deactivate active loan: %w", err)
 		}
 	}
-
-	// 检查是否需要清算
-	if healthFactor <= 1 {
-		s.logger.Info("health factor below liquidation threshold", zap.String("user", user), zap.Float64("healthFactor", healthFactor))
-		// liquidationInfo, err := s.getLiquidationInfo(user, healthFactor)
-		// if err != nil {
-		// 	return fmt.Errorf("failed to get liquidation info: %w", err)
-		// }
-
-		// if liquidationInfo != nil {
-		// 	// 执行清算
-		// 	if err := s.executeLiquidation(user, healthFactor); err != nil {
-		// 		return fmt.Errorf("failed to execute liquidation: %w", err)
-		// 	}
-		// }
+	if len(liquidationInfos) > 0 {
+		s.logger.Info("update health factor users", zap.Any("users", len(liquidationInfos)))
+		// 查找最佳清算信息
+		if err := s.findBestLiquidationInfos(liquidationInfos); err != nil {
+			return fmt.Errorf("failed to find best liquidation info: %w", err)
+		}
+		// 更新 health factor 到数据库
+		if err := s.dbWrapper.UpdateActiveLoanLiquidationInfos(s.chain.ChainName, liquidationInfos); err != nil {
+			return fmt.Errorf("failed to update loan liquidation infos in database: %w", err)
+		}
 	}
 
 	return nil

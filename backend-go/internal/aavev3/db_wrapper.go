@@ -18,57 +18,6 @@ func NewDBWrapper(db *gorm.DB) (*DBWrapper, error) {
 	return w, nil
 }
 
-// chainName -> address -> token
-func (w *DBWrapper) loadTokens() (map[string]map[string]*models.Token, error) {
-	var tokens []models.Token
-	if err := w.db.Find(&tokens).Error; err != nil {
-		return nil, fmt.Errorf("failed to load tokens: %w", err)
-	}
-
-	tokensMap := make(map[string]map[string]*models.Token)
-	for _, token := range tokens {
-		if tokensMap[token.ChainName] == nil {
-			tokensMap[token.ChainName] = make(map[string]*models.Token)
-		}
-		tokensMap[token.ChainName][token.Address] = &token
-	}
-	return tokensMap, nil
-}
-
-// chainName -> user -> loan
-func (w *DBWrapper) loadActiveLoans() (map[string]map[string]*models.Loan, error) {
-	var loans []models.Loan
-	if err := w.db.Where("is_active = ?", true).Find(&loans).Error; err != nil {
-		return nil, fmt.Errorf("failed to load active loans: %w", err)
-	}
-
-	activeLoansMap := make(map[string]map[string]*models.Loan)
-	for _, loan := range loans {
-		if activeLoansMap[loan.ChainName] == nil {
-			activeLoansMap[loan.ChainName] = make(map[string]*models.Loan)
-		}
-		activeLoansMap[loan.ChainName][loan.User] = &loan
-	}
-	return activeLoansMap, nil
-}
-
-// chainName -> user -> reserves
-func (w *DBWrapper) loadUserReserves() (map[string]map[string][]*models.Reserve, error) {
-	var reserves []models.Reserve
-	if err := w.db.Find(&reserves).Error; err != nil {
-		return nil, fmt.Errorf("failed to load user reserves: %w", err)
-	}
-
-	userReservesMap := make(map[string]map[string][]*models.Reserve)
-	for _, reserve := range reserves {
-		if userReservesMap[reserve.ChainName] == nil {
-			userReservesMap[reserve.ChainName] = make(map[string][]*models.Reserve)
-		}
-		userReservesMap[reserve.ChainName][reserve.User] = append(userReservesMap[reserve.ChainName][reserve.User], &reserve)
-	}
-	return userReservesMap, nil
-}
-
 func (w *DBWrapper) GetDB() *gorm.DB {
 	return w.db
 }
@@ -128,15 +77,25 @@ func (w *DBWrapper) CreateOrUpdateActiveLoan(chainName string, user string) (*mo
 	return &loan, nil
 }
 
-func (w *DBWrapper) UpdateActiveLoanHealthFactor(chainName string, user string, healthFactor float64) error {
-	if err := w.db.Model(&models.Loan{}).Where(&models.Loan{ChainName: chainName, User: user}).Update("health_factor", healthFactor).Error; err != nil {
-		return fmt.Errorf("failed to update active loan: %w", err)
+func (w *DBWrapper) UpdateActiveLoanLiquidationInfos(chainName string, liquidationInfos []*UpdateLiquidationInfo) error {
+	// batch update
+	for i := range liquidationInfos {
+		loan := models.Loan{
+			ChainName:       chainName,
+			User:            liquidationInfos[i].User,
+			HealthFactor:    liquidationInfos[i].HealthFactor,
+			LiquidationInfo: liquidationInfos[i].LiquidationInfo,
+			IsActive:        true,
+		}
+		if err := w.db.Model(&models.Loan{}).Where("chain_name = ? AND user = ?", chainName, liquidationInfos[i].User).Updates(loan).Error; err != nil {
+			return fmt.Errorf("failed to update active loan health factor: %w", err)
+		}
 	}
 	return nil
 }
 
-func (w *DBWrapper) DeactivateActiveLoan(chainName string, user string) error {
-	if err := w.db.Model(&models.Loan{}).Where(&models.Loan{ChainName: chainName, User: user}).Update("is_active", false).Error; err != nil {
+func (w *DBWrapper) DeactivateActiveLoan(chainName string, user []string) error {
+	if err := w.db.Model(&models.Loan{}).Where("chain_name = ? AND user IN (?)", chainName, user).Update("is_active", false).Error; err != nil {
 		return fmt.Errorf("failed to deactivate active loan: %w", err)
 	}
 	return nil

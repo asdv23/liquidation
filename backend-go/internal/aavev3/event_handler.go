@@ -183,9 +183,5 @@ func (s *Service) updateLoan(user string) error {
 		s.logger.Error("failed to update health factor", zap.Error(err), zap.String("user", user))
 	}
 
-	// update liquidation info
-	if err := s.updateLiquidationInfo(user, loan); err != nil {
-		s.logger.Error("failed to update liquidation info", zap.Error(err), zap.String("user", user))
-	}
 	return nil
 }

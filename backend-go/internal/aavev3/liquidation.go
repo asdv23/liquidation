@@ -100,28 +100,51 @@ import (
 // 	return nil
 // }
 
-func (s *Service) updateLiquidationInfo(user string, loan *models.Loan) error {
-	liquidationInfo, err := s.findBestLiquidationInfo(user)
-	if err != nil {
-		return fmt.Errorf("failed to find best liquidation info: %w", err)
+func (s *Service) findBestLiquidationInfos(liquidationInfos []*UpdateLiquidationInfo) error {
+	users := make([]string, 0)
+	for _, liquidationInfo := range liquidationInfos {
+		users = append(users, liquidationInfo.User)
 	}
-	if !liquidationInfo.Cmp(loan.LiquidationInfo) {
-		s.logger.Info("liquidation info changed", zap.String("user", user), zap.Any("old", loan.LiquidationInfo), zap.Any("new", liquidationInfo))
-		loan.LiquidationInfo = liquidationInfo
 
-		if err := s.dbWrapper.UpdateActiveLoan(s.chain.ChainName, user, loan); err != nil {
-			return fmt.Errorf("failed to update loan liquidation info: %w", err)
+	userConfigs, err := s.getUserConfigurationForBatch(users)
+	if err != nil {
+		return fmt.Errorf("failed to get user configurations: %w", err)
+	}
+	if len(userConfigs) != len(liquidationInfos) {
+		return fmt.Errorf("user configs length mismatch")
+	}
+
+	for i, userConfig := range userConfigs {
+		info := liquidationInfos[i]
+		liquidationInfo, err := s.findBestLiquidationInfo(info.User, userConfig)
+		if err != nil {
+			return fmt.Errorf("failed to find best liquidation info: %w", err)
+		}
+		liquidationInfo.TotalCollateralBase = models.NewBigInt(info.LiquidationInfo.TotalCollateralBase.BigInt())
+		liquidationInfo.TotalDebtBase = models.NewBigInt(info.LiquidationInfo.TotalDebtBase.BigInt())
+		liquidationInfo.LiquidationThreshold = models.NewBigInt(info.LiquidationInfo.LiquidationThreshold.BigInt())
+		info.LiquidationInfo = liquidationInfo
+
+		if info.HealthFactor < 1 {
+			s.logger.Info("health factor below liquidation threshold 🌟🌟🌟🌟🌟🌟", zap.String("user", info.User), zap.Any("healthFactor", info.HealthFactor))
+			// liquidationInfo, err := s.getLiquidationInfo(user, healthFactor)
+			// if err != nil {
+			// 	return fmt.Errorf("failed to get liquidation info: %w", err)
+			// }
+
+			// if liquidationInfo != nil {
+			// 	// 执行清算
+			// 	if err := s.executeLiquidation(user, healthFactor); err != nil {
+			// 		return fmt.Errorf("failed to execute liquidation: %w", err)
+			// 	}
+			// }
 		}
 	}
 
 	return nil
 }
 
-func (s *Service) findBestLiquidationInfo(user string) (*models.LiquidationInfo, error) {
-	userConfig, err := s.getUserConfiguration(user)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get user configuration: %w", err)
-	}
+func (s *Service) findBestLiquidationInfo(user string, userConfig *aavev3.DataTypesUserConfigurationMap) (*models.LiquidationInfo, error) {
 	abi, err := aavev3.AaveProtocolDataProviderMetaData.GetAbi()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get abi: %w", err)
