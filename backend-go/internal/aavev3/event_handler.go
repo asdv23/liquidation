@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	aavev3 "liquidation-bot/bindings/aavev3"
+	"liquidation-bot/internal/models"
 	"liquidation-bot/pkg/blockchain"
 	"math/big"
 
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
 func (s *Service) handleEvents(ctx context.Context) error {
@@ -79,15 +81,10 @@ func (s *Service) handleEvents(ctx context.Context) error {
 
 func (s *Service) handleBorrowEvent(event *aavev3.PoolBorrow) {
 	s.logger.Info("borrow event 😄", zap.Any("user", event.User.Hex()))
-	if tokenInfo, err := s.dbWrapper.GetTokenInfo(s.chain.ChainName, event.Reserve.Hex()); err == nil {
-		s.logger.Info(" - ", zap.Any("Amount", formatAmount(event.Amount, tokenInfo.Decimals)+" "+tokenInfo.Symbol))
-		s.logger.Info(" - ", zap.Any("AmountUSD", amountToUSD(event.Amount, tokenInfo.Decimals, (*big.Int)(tokenInfo.Price))))
-	} else {
-		s.logger.Info(" - ", zap.Any("Amount", event.Amount.String()))
-	}
 	s.logger.Info(" - ", zap.Any("Reserve", event.Reserve.Hex()))
 	s.logger.Info(" - ", zap.Any("User", event.User.Hex()))
 	s.logger.Info(" - ", zap.Any("OnBehalfOf", event.OnBehalfOf.Hex()))
+	s.infoAmount("Amount", event.Reserve.Hex(), event.Amount)
 	s.logger.Info(" - ", zap.Any("InterestRateMode", event.InterestRateMode))
 	s.logger.Info(" - ", zap.Any("BorrowRate", event.BorrowRate))
 	s.logger.Info(" - ", zap.Any("ReferralCode", event.ReferralCode))
@@ -97,12 +94,37 @@ func (s *Service) handleBorrowEvent(event *aavev3.PoolBorrow) {
 	}
 }
 
+func (s *Service) infoAmount(msg, reserve string, amount *big.Int) {
+	if tokenInfo, err := s.getTokenInfo(reserve); err != nil {
+		s.logger.Info(" - ", zap.Any(msg, amount.String()), zap.Error(err))
+	} else {
+		s.logger.Info(" - ", zap.Any(msg, formatAmount(amount, tokenInfo.Decimals.BigInt())+" "+tokenInfo.Symbol))
+		s.logger.Info(" - ", zap.Any(msg+"USD", amountToUSD(amount, tokenInfo.Decimals.BigInt(), tokenInfo.Price.BigInt())))
+		s.logger.Info(" - ", zap.Any("Price", big.NewFloat(0).Quo(big.NewFloat(0).SetInt((*big.Int)(tokenInfo.Price)), USD_DECIMALS)))
+	}
+}
+
+func (s *Service) getTokenInfo(reserve string) (*models.Token, error) {
+	tokenInfo, err := s.dbWrapper.GetTokenInfo(s.chain.ChainName, reserve)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			tokenInfo, err = s.createTokenInfoFromChain(reserve)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get token info from chain: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("failed to get token info: %w", err)
+		}
+	}
+	return tokenInfo, nil
+}
+
 func (s *Service) handleRepayEvent(event *aavev3.PoolRepay) {
 	s.logger.Info("repay event 😢", zap.Any("user", event.User.Hex()))
 	s.logger.Info(" - ", zap.Any("Reserve", event.Reserve.Hex()))
 	s.logger.Info(" - ", zap.Any("User", event.User.Hex()))
 	s.logger.Info(" - ", zap.Any("Repayer", event.Repayer.Hex()))
-	s.logger.Info(" - ", zap.Any("Amount", event.Amount.String()))
+	s.infoAmount("Amount", event.Reserve.Hex(), event.Amount)
 	s.logger.Info(" - ", zap.Any("UseATokens", event.UseATokens))
 
 	if err := s.updateLoan(event.User.Hex()); err != nil {
@@ -115,7 +137,7 @@ func (s *Service) handleSupplyEvent(event *aavev3.PoolSupply) {
 	s.logger.Info(" - ", zap.Any("Reserve", event.Reserve.Hex()))
 	s.logger.Info(" - ", zap.Any("User", event.User.Hex()))
 	s.logger.Info(" - ", zap.Any("OnBehalfOf", event.OnBehalfOf.Hex()))
-	s.logger.Info(" - ", zap.Any("Amount", event.Amount.String()))
+	s.infoAmount("Amount", event.Reserve.Hex(), event.Amount)
 	s.logger.Info(" - ", zap.Any("ReferralCode", event.ReferralCode))
 
 	if err := s.updateLoan(event.User.Hex()); err != nil {
@@ -128,7 +150,7 @@ func (s *Service) handleWithdrawEvent(event *aavev3.PoolWithdraw) {
 	s.logger.Info(" - ", zap.Any("Reserve", event.Reserve.Hex()))
 	s.logger.Info(" - ", zap.Any("User", event.User.Hex()))
 	s.logger.Info(" - ", zap.Any("To", event.To.Hex()))
-	s.logger.Info(" - ", zap.Any("Amount", event.Amount.String()))
+	s.infoAmount("Amount", event.Reserve.Hex(), event.Amount)
 
 	if err := s.updateLoan(event.User.Hex()); err != nil {
 		s.logger.Error("failed to update loan", zap.Error(err), zap.String("user", event.User.Hex()))
@@ -140,8 +162,8 @@ func (s *Service) handleLiquidationEvent(event *aavev3.PoolLiquidationCall) {
 	s.logger.Info(" - ", zap.Any("CollateralAsset", event.CollateralAsset.Hex()))
 	s.logger.Info(" - ", zap.Any("DebtAsset", event.DebtAsset.Hex()))
 	s.logger.Info(" - ", zap.Any("User", event.User.Hex()))
-	s.logger.Info(" - ", zap.Any("DebtToCover", event.DebtToCover.String()))
-	s.logger.Info(" - ", zap.Any("LiquidatedCollateralAmount", event.LiquidatedCollateralAmount.String()))
+	s.infoAmount("DebtToCover", event.DebtAsset.Hex(), event.DebtToCover)
+	s.infoAmount("LiquidatedCollateralAmount", event.CollateralAsset.Hex(), event.LiquidatedCollateralAmount)
 	s.logger.Info(" - ", zap.Any("Liquidator", event.Liquidator.Hex()))
 	s.logger.Info(" - ", zap.Any("ReceiveAToken", event.ReceiveAToken))
 

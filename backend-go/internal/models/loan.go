@@ -11,6 +11,13 @@ import (
 // BigInt 是一个包装了 big.Int 的类型，实现了 GORM 的 Valuer/Scanner 接口
 type BigInt big.Int
 
+func (b *BigInt) BigInt() *big.Int {
+	if b == nil {
+		return nil
+	}
+	return (*big.Int)(b)
+}
+
 // Value 实现了 driver.Valuer 接口
 func (b *BigInt) Value() (driver.Value, error) {
 	if b == nil {

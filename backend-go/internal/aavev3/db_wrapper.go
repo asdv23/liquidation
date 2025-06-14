@@ -6,6 +6,7 @@ import (
 	"math/big"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type DBWrapper struct {
@@ -85,7 +86,7 @@ func (w *DBWrapper) AddTokenInfo(chainName string, address string, symbol string
 		ChainName: chainName,
 		Address:   address,
 		Symbol:    symbol,
-		Decimals:  int(decimals.Int64()),
+		Decimals:  (*models.BigInt)(decimals),
 		Price:     (*models.BigInt)(price),
 	}
 	if err := w.db.Where(&models.Token{ChainName: chainName, Address: address}).
@@ -111,10 +112,17 @@ func (w *DBWrapper) ChainActiveLoans(chainName string) (map[string]*models.Loan,
 }
 
 func (w *DBWrapper) CreateOrUpdateActiveLoan(chainName string, user string) (*models.Loan, error) {
-	var loan models.Loan
-	if err := w.db.Where(&models.Loan{ChainName: chainName, User: user}).
-		Assign(models.Loan{IsActive: true}).
-		FirstOrCreate(&loan).Error; err != nil {
+	loan := models.Loan{
+		ChainName: chainName,
+		User:      user,
+		IsActive:  true,
+	}
+	if err := w.db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "chain_name"}, {Name: "user"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"is_active",
+		}),
+	}).Create(&loan).Error; err != nil {
 		return nil, fmt.Errorf("failed to upsert active loan: %w", err)
 	}
 	return &loan, nil
@@ -123,6 +131,13 @@ func (w *DBWrapper) CreateOrUpdateActiveLoan(chainName string, user string) (*mo
 func (w *DBWrapper) UpdateActiveLoanHealthFactor(chainName string, user string, healthFactor float64) error {
 	if err := w.db.Model(&models.Loan{}).Where(&models.Loan{ChainName: chainName, User: user}).Update("health_factor", healthFactor).Error; err != nil {
 		return fmt.Errorf("failed to update active loan: %w", err)
+	}
+	return nil
+}
+
+func (w *DBWrapper) DeactivateActiveLoan(chainName string, user string) error {
+	if err := w.db.Model(&models.Loan{}).Where(&models.Loan{ChainName: chainName, User: user}).Update("is_active", false).Error; err != nil {
+		return fmt.Errorf("failed to deactivate active loan: %w", err)
 	}
 	return nil
 }
@@ -154,9 +169,12 @@ func (w *DBWrapper) GetLiquidationInfo(chainName string, user string) (*models.L
 func (w *DBWrapper) AddUserReserves(chainName string, user string, reserves []*models.Reserve) error {
 	// upsert
 	for _, reserve := range reserves {
-		if err := w.db.Where(&models.Reserve{ChainName: chainName, User: user, Reserve: reserve.Reserve}).
-			Assign(reserve).
-			FirstOrCreate(&reserve).Error; err != nil {
+		if err := w.db.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "chain_name"}, {Name: "user"}, {Name: "reserve"}},
+			DoUpdates: clause.AssignmentColumns([]string{
+				`amount`, `amount_base`, `is_borrowing`, `is_using_as_collateral`,
+			}),
+		}).Create(&reserve).Error; err != nil {
 			return fmt.Errorf("failed to upsert user reserve: %w", err)
 		}
 	}

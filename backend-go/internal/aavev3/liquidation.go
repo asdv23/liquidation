@@ -169,7 +169,7 @@ func (s *Service) findBestLiquidationInfo(user string) (*models.LiquidationInfo,
 		}
 		if isBorrowing(userConfig, i) {
 			debt := big.NewInt(0).Add(userReserveData.CurrentStableDebt, userReserveData.CurrentVariableDebt)
-			base := amountToUSD(debt, token.Decimals, (*big.Int)(token.Price))
+			base := amountToUSD(debt, token.Decimals.BigInt(), token.Price.BigInt())
 			if base > liquidationInfo.DebtAmountBase {
 				liquidationInfo.DebtAmountBase = base
 				liquidationInfo.DebtAmount = (*models.BigInt)(debt)
@@ -188,7 +188,7 @@ func (s *Service) findBestLiquidationInfo(user string) (*models.LiquidationInfo,
 
 		if isUsingAsCollateral(userConfig, i) {
 			collateral := big.NewInt(0).Set(userReserveData.CurrentATokenBalance)
-			base := amountToUSD(collateral, token.Decimals, (*big.Int)(token.Price))
+			base := amountToUSD(collateral, token.Decimals.BigInt(), token.Price.BigInt())
 			if base > liquidationInfo.CollateralAmountBase {
 				liquidationInfo.CollateralAmountBase = base
 				liquidationInfo.CollateralAmount = (*models.BigInt)(collateral)

@@ -7,6 +7,7 @@ import (
 	"liquidation-bot/internal/models"
 	"liquidation-bot/internal/utils"
 	"liquidation-bot/pkg/blockchain"
+	"math/big"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
@@ -89,6 +90,10 @@ func (s *Service) processBatch(batchUsers []string, activeLoans map[string]*mode
 }
 
 func (s *Service) processUser(user string, accountData *UserAccountData, loan *models.Loan) error {
+	if debtUSD := big.NewFloat(0).Quo(big.NewFloat(0).SetInt(accountData.TotalDebtBase), USD_DECIMALS); debtUSD.Cmp(MIN_DEBT_USD) < 0 {
+		s.logger.Info("total debt base is less than MIN_DEBT_USD", zap.String("user", user), zap.Any("debtUSD", debtUSD), zap.Any("minDebtUSD", MIN_DEBT_USD))
+		return s.dbWrapper.DeactivateActiveLoan(s.chain.ChainName, user)
+	}
 	// 计算健康因子
 	healthFactor := formatHealthFactor(accountData.HealthFactor)
 	if healthFactor == 0 {

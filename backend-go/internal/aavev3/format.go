@@ -5,6 +5,11 @@ import (
 	"math/big"
 )
 
+var (
+	MIN_DEBT_USD = big.NewFloat(2)
+	USD_DECIMALS = big.NewFloat(1e8)
+)
+
 func formatHealthFactor(healthFactor *big.Int) float64 {
 	if healthFactor == nil {
 		return 0
@@ -34,20 +39,20 @@ func parseAmount(amount string, decimals uint8) (*big.Int, error) {
 }
 
 // 辅助方法
-func formatAmount(amount *big.Int, decimals int) string {
+func formatAmount(amount, decimals *big.Int) string {
 	if amount == nil {
 		return "0"
 	}
 
 	// 将大整数转换为浮点数并考虑精度
 	f := new(big.Float).SetInt(amount)
-	f.Quo(f, new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil)))
+	f.Quo(f, new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), decimals, nil)))
 
 	result, _ := f.Float64()
 	return fmt.Sprintf("%.8f", result)
 }
 
-func amountToUSD(amount *big.Int, decimals int, price *big.Int) float64 {
+func amountToUSD(amount, decimals *big.Int, price *big.Int) float64 {
 	if amount == nil || price == nil {
 		return 0
 	}
@@ -55,10 +60,10 @@ func amountToUSD(amount *big.Int, decimals int, price *big.Int) float64 {
 	// 计算 USD 价值
 	value := new(big.Float).SetInt(amount)
 	priceFloat := new(big.Float).SetInt(price)
-	priceFloat.Quo(priceFloat, new(big.Float).SetInt(big.NewInt(1e8)))
+	priceFloat.Quo(priceFloat, USD_DECIMALS)
 
 	// 考虑精度
-	decimalsFactor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil))
+	decimalsFactor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), decimals, nil))
 	value.Quo(value, decimalsFactor)
 
 	result := new(big.Float).Mul(value, priceFloat)
