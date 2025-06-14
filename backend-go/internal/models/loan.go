@@ -75,9 +75,6 @@ type LiquidationInfo struct {
 }
 
 func (old *LiquidationInfo) Cmp(new *LiquidationInfo) bool {
-	if new == nil {
-		return false
-	}
 	return old.DebtAsset == new.DebtAsset &&
 		old.DebtAmount == new.DebtAmount &&
 		old.CollateralAsset == new.CollateralAsset &&

@@ -101,7 +101,7 @@ func (s *Service) startHealthFactorChecker(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(time.Minute):
+		case <-time.After(5 * time.Minute):
 		}
 	}
 }
@@ -190,7 +190,7 @@ func (s *Service) startReservesChecker(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(time.Minute):
+		case <-time.After(5 * time.Minute):
 		}
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"liquidation-bot/pkg/blockchain"
 
 	"github.com/ethereum/go-ethereum/common"
+	"go.uber.org/zap"
 )
 
 func (s *Service) getUserAccountData(user string) (*UserAccountData, error) {
@@ -120,7 +121,11 @@ func (s *Service) getUserConfigurationForBatch(users []string) ([]*aavev3.DataTy
 	}
 
 	userConfigs := make([]*aavev3.DataTypesUserConfigurationMap, 0)
-	for _, result := range results {
+	for i, result := range results {
+		if !result.Success {
+			s.logger.Info("getUserConfiguration call failed", zap.String("user", users[i]))
+			continue
+		}
 		var userConfig struct {
 			Data aavev3.DataTypesUserConfigurationMap
 		}
