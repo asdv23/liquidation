@@ -1,6 +1,7 @@
 package aavev3
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	aavev3 "liquidation-bot/bindings/aavev3"
@@ -8,10 +9,11 @@ import (
 	"liquidation-bot/internal/utils"
 	"liquidation-bot/pkg/blockchain"
 	"math/big"
-	"os"
 	"sync"
 	"time"
 
+	"github.com/avast/retry-go/v4"
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/zap"
@@ -49,7 +51,7 @@ func NewService(
 	dbWrapper *DBWrapper,
 ) (*Service, error) {
 	s := &Service{
-		logger:               chain.Logger.With(zap.String("service", "aavev3")),
+		logger:               chain.Logger.Named("aavev3"),
 		chain:                chain,
 		dbWrapper:            dbWrapper,
 		liquidationInfoCache: make(map[string]*LiquidationInfo),
@@ -62,26 +64,32 @@ func NewService(
 
 // Initialize 初始化服务
 func (s *Service) Initialize() {
-	eg, ctx := errgroup.WithContext(s.chain.Ctx)
-	// 1. 启动事件处理
-	eg.Go(func() error {
-		return s.handleEvents(ctx)
-	})
-	// 2. 启动价格流
-	eg.Go(func() error {
-		return s.startPriceStream(ctx)
-	})
-	// 3.启动健康因子检查
-	eg.Go(func() error {
-		return s.startHealthFactorChecker(ctx)
-	})
-	// 4. 启动储备检查
-	eg.Go(func() error {
-		return s.startReservesChecker(ctx)
-	})
-	if err := eg.Wait(); err != nil {
-		s.logger.Error("failed to initialize service", zap.Error(err))
-		os.Exit(1)
+	err := retry.Do(func() error {
+		eg, ctx := errgroup.WithContext(s.chain.Ctx)
+		// 1. 启动事件处理
+		eg.Go(func() error {
+			return s.handleEvents(ctx)
+		})
+		// 2. 启动价格流
+		eg.Go(func() error {
+			return s.startPriceStream(ctx)
+		})
+		// 3.启动健康因子检查
+		eg.Go(func() error {
+			return s.startHealthFactorChecker(ctx)
+		})
+		// 4. 启动储备检查
+		eg.Go(func() error {
+			return s.startReservesChecker(ctx)
+		})
+		if err := eg.Wait(); err != nil {
+			s.logger.Error("failed to initialize service", zap.Error(err))
+			return fmt.Errorf("failed to initialize service: %w", err)
+		}
+		return nil
+	}, retry.Attempts(3), retry.Delay(10*time.Second), retry.MaxDelay(1*time.Minute))
+	if err != nil {
+		s.logger.Fatal("failed to initialize service", zap.Error(err))
 	}
 }
 
@@ -98,6 +106,7 @@ func (s *Service) startHealthFactorChecker(ctx context.Context) error {
 	}
 }
 
+// startReservesChecker 启动储备检查
 func (s *Service) startReservesChecker(ctx context.Context) error {
 	for {
 		callOpts, cancel := s.getCallOpts()
@@ -108,7 +117,6 @@ func (s *Service) startReservesChecker(ctx context.Context) error {
 			return fmt.Errorf("failed to get reserves list: %w", err)
 		}
 		s.reservesList = reservesList
-		s.logger.Info("reserves list", zap.Any("reserves", reservesList))
 
 		// token
 		erc20Abi, err := bindings.ERC20MetaData.GetAbi()
@@ -172,10 +180,7 @@ func (s *Service) startReservesChecker(ctx context.Context) error {
 		for i, result := range results {
 			price := new(big.Int).SetBytes(result.ReturnData)
 			decimals := new(big.Int).SetBytes(decimalsResults[i].ReturnData)
-			var symbol string
-			if err := erc20Abi.UnpackIntoInterface(&symbol, "symbol", symbolsResults[i].ReturnData); err != nil {
-				return fmt.Errorf("failed to unpack symbol: %w", err)
-			}
+			symbol := decodeSymbol(symbolsResults[i].ReturnData, erc20Abi)
 			s.logger.Info("reserves price", zap.String("reserve", reservesList[i].Hex()), zap.String("price", price.String()), zap.String("decimals", decimals.String()), zap.String("symbol", symbol))
 			if _, err := s.dbWrapper.AddTokenInfo(s.chain.ChainName, reservesList[i].Hex(), symbol, decimals, price); err != nil {
 				return fmt.Errorf("failed to add token info: %w", err)
@@ -188,6 +193,16 @@ func (s *Service) startReservesChecker(ctx context.Context) error {
 		case <-time.After(time.Minute):
 		}
 	}
+}
+
+func decodeSymbol(returnData []byte, erc20Abi *abi.ABI) string {
+	var symbol string
+	err := erc20Abi.UnpackIntoInterface(&symbol, "symbol", returnData)
+	if err != nil {
+		return string(bytes.TrimRight(returnData, "\x00"))
+	}
+
+	return symbol
 }
 
 func (s *Service) getCallOpts() (*bind.CallOpts, context.CancelFunc) {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	aavev3 "liquidation-bot/bindings/aavev3"
 	"liquidation-bot/pkg/blockchain"
+	"math/big"
 
 	"go.uber.org/zap"
 )
@@ -78,73 +79,91 @@ func (s *Service) handleEvents(ctx context.Context) error {
 
 func (s *Service) handleBorrowEvent(event *aavev3.PoolBorrow) {
 	s.logger.Info("borrow event 😄", zap.Any("user", event.User.Hex()))
-	// create or update loan
-	if err := s.dbWrapper.CreateOrUpdateActiveLoan(s.chain.ChainName, event.User.Hex()); err != nil {
-		s.logger.Error("failed to create or update loan", zap.Error(err), zap.String("user", event.User.Hex()))
+	if tokenInfo, err := s.dbWrapper.GetTokenInfo(s.chain.ChainName, event.Reserve.Hex()); err == nil {
+		s.logger.Info(" - ", zap.Any("Amount", formatAmount(event.Amount, tokenInfo.Decimals)+" "+tokenInfo.Symbol))
+		s.logger.Info(" - ", zap.Any("AmountUSD", amountToUSD(event.Amount, tokenInfo.Decimals, (*big.Int)(tokenInfo.Price))))
+	} else {
+		s.logger.Info(" - ", zap.Any("Amount", event.Amount.String()))
 	}
+	s.logger.Info(" - ", zap.Any("Reserve", event.Reserve.Hex()))
+	s.logger.Info(" - ", zap.Any("User", event.User.Hex()))
+	s.logger.Info(" - ", zap.Any("OnBehalfOf", event.OnBehalfOf.Hex()))
+	s.logger.Info(" - ", zap.Any("InterestRateMode", event.InterestRateMode))
+	s.logger.Info(" - ", zap.Any("BorrowRate", event.BorrowRate))
+	s.logger.Info(" - ", zap.Any("ReferralCode", event.ReferralCode))
 
-	// update health factor
-	if err := s.updateHealthFactorViaEvent(event.User.Hex()); err != nil {
-		s.logger.Error("failed to update health factor", zap.Error(err), zap.String("user", event.User.Hex()))
-	}
-
-	// update liquidation info
-	if err := s.updateLiquidationInfo(event.User.Hex()); err != nil {
-		s.logger.Error("failed to update liquidation info", zap.Error(err), zap.String("user", event.User.Hex()))
+	if err := s.updateLoan(event.User.Hex()); err != nil {
+		s.logger.Error("failed to update loan", zap.Error(err), zap.String("user", event.User.Hex()))
 	}
 }
 
 func (s *Service) handleRepayEvent(event *aavev3.PoolRepay) {
 	s.logger.Info("repay event 😢", zap.Any("user", event.User.Hex()))
-	// update health factor
-	if err := s.updateHealthFactorViaEvent(event.User.Hex()); err != nil {
-		s.logger.Error("failed to update health factor", zap.Error(err), zap.String("user", event.User.Hex()))
-	}
+	s.logger.Info(" - ", zap.Any("Reserve", event.Reserve.Hex()))
+	s.logger.Info(" - ", zap.Any("User", event.User.Hex()))
+	s.logger.Info(" - ", zap.Any("Repayer", event.Repayer.Hex()))
+	s.logger.Info(" - ", zap.Any("Amount", event.Amount.String()))
+	s.logger.Info(" - ", zap.Any("UseATokens", event.UseATokens))
 
-	// update liquidation info
-	if err := s.updateLiquidationInfo(event.User.Hex()); err != nil {
-		s.logger.Error("failed to update liquidation info", zap.Error(err), zap.String("user", event.User.Hex()))
+	if err := s.updateLoan(event.User.Hex()); err != nil {
+		s.logger.Error("failed to update loan", zap.Error(err), zap.String("user", event.User.Hex()))
 	}
 }
 
 func (s *Service) handleSupplyEvent(event *aavev3.PoolSupply) {
 	s.logger.Info("supply event 👀", zap.Any("user", event.User.Hex()))
+	s.logger.Info(" - ", zap.Any("Reserve", event.Reserve.Hex()))
+	s.logger.Info(" - ", zap.Any("User", event.User.Hex()))
+	s.logger.Info(" - ", zap.Any("OnBehalfOf", event.OnBehalfOf.Hex()))
+	s.logger.Info(" - ", zap.Any("Amount", event.Amount.String()))
+	s.logger.Info(" - ", zap.Any("ReferralCode", event.ReferralCode))
 
-	// update health factor
-	if err := s.updateHealthFactorViaEvent(event.User.Hex()); err != nil {
-		s.logger.Error("failed to update health factor", zap.Error(err), zap.String("user", event.User.Hex()))
-	}
-
-	// update liquidation info
-	if err := s.updateLiquidationInfo(event.User.Hex()); err != nil {
-		s.logger.Error("failed to update liquidation info", zap.Error(err), zap.String("user", event.User.Hex()))
+	if err := s.updateLoan(event.User.Hex()); err != nil {
+		s.logger.Error("failed to update loan", zap.Error(err), zap.String("user", event.User.Hex()))
 	}
 }
 
 func (s *Service) handleWithdrawEvent(event *aavev3.PoolWithdraw) {
 	s.logger.Info("withdraw event 🤨", zap.Any("user", event.User.Hex()))
+	s.logger.Info(" - ", zap.Any("Reserve", event.Reserve.Hex()))
+	s.logger.Info(" - ", zap.Any("User", event.User.Hex()))
+	s.logger.Info(" - ", zap.Any("To", event.To.Hex()))
+	s.logger.Info(" - ", zap.Any("Amount", event.Amount.String()))
 
-	// update health factor
-	if err := s.updateHealthFactorViaEvent(event.User.Hex()); err != nil {
-		s.logger.Error("failed to update health factor", zap.Error(err), zap.String("user", event.User.Hex()))
-	}
-
-	// update liquidation info
-	if err := s.updateLiquidationInfo(event.User.Hex()); err != nil {
-		s.logger.Error("failed to update liquidation info", zap.Error(err), zap.String("user", event.User.Hex()))
+	if err := s.updateLoan(event.User.Hex()); err != nil {
+		s.logger.Error("failed to update loan", zap.Error(err), zap.String("user", event.User.Hex()))
 	}
 }
 
 func (s *Service) handleLiquidationEvent(event *aavev3.PoolLiquidationCall) {
 	s.logger.Info("liquidation event 🤩", zap.Any("user", event.User.Hex()))
+	s.logger.Info(" - ", zap.Any("CollateralAsset", event.CollateralAsset.Hex()))
+	s.logger.Info(" - ", zap.Any("DebtAsset", event.DebtAsset.Hex()))
+	s.logger.Info(" - ", zap.Any("User", event.User.Hex()))
+	s.logger.Info(" - ", zap.Any("DebtToCover", event.DebtToCover.String()))
+	s.logger.Info(" - ", zap.Any("LiquidatedCollateralAmount", event.LiquidatedCollateralAmount.String()))
+	s.logger.Info(" - ", zap.Any("Liquidator", event.Liquidator.Hex()))
+	s.logger.Info(" - ", zap.Any("ReceiveAToken", event.ReceiveAToken))
+
+	if err := s.updateLoan(event.User.Hex()); err != nil {
+		s.logger.Error("failed to update loan", zap.Error(err), zap.String("user", event.User.Hex()))
+	}
+}
+
+func (s *Service) updateLoan(user string) error {
+	loan, err := s.dbWrapper.CreateOrUpdateActiveLoan(s.chain.ChainName, user)
+	if err != nil {
+		return fmt.Errorf("failed to create or update loan: %w", err)
+	}
 
 	// update health factor
-	if err := s.updateHealthFactorViaEvent(event.User.Hex()); err != nil {
-		s.logger.Error("failed to update health factor", zap.Error(err), zap.String("user", event.User.Hex()))
+	if err := s.updateHealthFactorViaEvent(user, loan); err != nil {
+		s.logger.Error("failed to update health factor", zap.Error(err), zap.String("user", user))
 	}
 
 	// update liquidation info
-	if err := s.updateLiquidationInfo(event.User.Hex()); err != nil {
-		s.logger.Error("failed to update liquidation info", zap.Error(err), zap.String("user", event.User.Hex()))
+	if err := s.updateLiquidationInfo(user, loan); err != nil {
+		s.logger.Error("failed to update liquidation info", zap.Error(err), zap.String("user", user))
 	}
+	return nil
 }

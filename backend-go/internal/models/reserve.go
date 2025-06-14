@@ -9,18 +9,15 @@ import (
 type Reserve struct {
 	ID uint `gorm:"primarykey"`
 	// LoanID               uint `gorm:"foreignKey:LoanID;references:ID"`
-	ChainName            string `gorm:"uniqueIndex:idx_chain_reserve,priority:1"`
-	User                 string `gorm:"uniqueIndex:idx_chain_reserve,priority:2"`
-	Reserve              string `gorm:"uniqueIndex:idx_chain_reserve,priority:3"`
-	Amount               *BigInt
-	AmountBase           *BigInt
-	IsBorrowing          bool
-	IsUsingAsCollateral  bool
-	CurrentATokenBalance *BigInt
-	CurrentVariableDebt  *BigInt
-	CurrentStableDebt    *BigInt
-	CreatedAt            time.Time
-	UpdatedAt            time.Time
+	ChainName           string `gorm:"uniqueIndex:idx_chain_reserve,priority:1"`
+	User                string `gorm:"uniqueIndex:idx_chain_reserve,priority:2"`
+	Reserve             string `gorm:"uniqueIndex:idx_chain_reserve,priority:3"`
+	Amount              *BigInt
+	AmountBase          float64
+	IsBorrowing         bool
+	IsUsingAsCollateral bool
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 func (t *Reserve) BeforeCreate(tx *gorm.DB) error {

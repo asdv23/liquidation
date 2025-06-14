@@ -55,6 +55,7 @@ func amountToUSD(amount *big.Int, decimals int, price *big.Int) float64 {
 	// 计算 USD 价值
 	value := new(big.Float).SetInt(amount)
 	priceFloat := new(big.Float).SetInt(price)
+	priceFloat.Quo(priceFloat, new(big.Float).SetInt(big.NewInt(1e8)))
 
 	// 考虑精度
 	decimalsFactor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil))

@@ -270,6 +270,9 @@ kill <进程ID>
 ### 6. 日志管理
 ```bash
 tail -n 1000 ~/.pm2/logs/bot-out.log
+
+# 清空所有日志
+pm2 flush
 ```
 
 ### 7. 更新服务

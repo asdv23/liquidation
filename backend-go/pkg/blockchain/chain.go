@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/avast/retry-go/v4"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -137,12 +138,10 @@ func (c *Chain) reconnect() {
 			return
 		case <-c.reconnectCh:
 			c.Logger.Info("WebSocket disconnected, attempting to reconnect...")
-			maxAttempts := 5
-			for attempt := 1; attempt <= maxAttempts; attempt++ {
+			err := retry.Do(func() error {
 				if err := c.connect(); err != nil {
-					c.Logger.Error("Reconnect attempt failed", zap.Int("attempt", attempt), zap.Error(err))
-					time.Sleep(time.Duration(attempt) * time.Second) // 简单指数退避
-					continue
+					c.Logger.Error("Reconnect attempt failed", zap.Error(err))
+					return fmt.Errorf("failed to reconnect: %w", err)
 				}
 				c.Logger.Info("Reconnected successfully")
 				for _, fn := range c.reconnectFns {
@@ -150,10 +149,11 @@ func (c *Chain) reconnect() {
 					c.Logger.Info("Reconnecting", zap.String("fn", fmt.Sprintf("%T", fn)))
 					go fn()
 				}
-				break
+				return nil
+			}, retry.Attempts(5), retry.Delay(time.Second), retry.MaxDelay(time.Minute))
+			if err != nil {
+				c.Logger.Fatal("Failed to reconnect", zap.Error(err))
 			}
-			c.Logger.Error("Failed to reconnect after max attempts, retrying later...", zap.Int("maxAttempts", maxAttempts))
-			time.Sleep(time.Minute) // 等待更长时间后重试
 		}
 	}
 }

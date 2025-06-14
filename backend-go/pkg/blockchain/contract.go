@@ -1,7 +1,6 @@
 package blockchain
 
 import (
-	"context"
 	"fmt"
 
 	aavev3 "liquidation-bot/bindings/aavev3"
@@ -40,7 +39,7 @@ func NewContracts(backend bind.ContractBackend, contractsMap map[string]string) 
 	contracts := Contracts{
 		Addresses: make(map[ContractType]common.Address),
 	}
-	eg, _ := errgroup.WithContext(context.Background())
+	var eg errgroup.Group
 	for key, address := range contractsMap {
 		contractType := ContractType(key)
 		address := common.HexToAddress(address)

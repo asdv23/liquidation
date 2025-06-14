@@ -3,6 +3,7 @@ module liquidation-bot
 go 1.24
 
 require (
+	github.com/avast/retry-go/v4 v4.6.1
 	github.com/ethereum/go-ethereum v1.15.8
 	github.com/gin-gonic/gin v1.9.1
 	github.com/spf13/viper v1.20.1

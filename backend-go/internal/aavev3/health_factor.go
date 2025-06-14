@@ -14,14 +14,8 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-func (s *Service) updateHealthFactorViaEvent(user string) error {
-	activeLoans, ok := s.dbWrapper.GetActiveLoans(s.chain.ChainName)
-	if !ok || len(activeLoans) == 0 {
-		s.logger.Info("no active loans", zap.String("chain", s.chain.ChainName))
-		return nil
-	}
-
-	return s.processBatch([]string{user}, activeLoans)
+func (s *Service) updateHealthFactorViaEvent(user string, loan *models.Loan) error {
+	return s.processBatch([]string{user}, map[string]*models.Loan{user: loan})
 }
 
 func (s *Service) updateHealthFactorViaPrice(token string) error {
@@ -33,8 +27,12 @@ const (
 )
 
 func (s *Service) checkHealthFactorsBatch() {
-	activeLoans, ok := s.dbWrapper.GetActiveLoans(s.chain.ChainName)
-	if !ok || len(activeLoans) == 0 {
+	activeLoans, err := s.dbWrapper.ChainActiveLoans(s.chain.ChainName)
+	if err != nil {
+		s.logger.Error("failed to get active loans", zap.Error(err))
+		return
+	}
+	if len(activeLoans) == 0 {
 		s.logger.Info("no active loans")
 		return
 	}
@@ -73,7 +71,7 @@ func (s *Service) processBatch(batchUsers []string, activeLoans map[string]*mode
 	}
 
 	// 处理每个用户
-	eg, _ := errgroup.WithContext(s.chain.Ctx)
+	var eg errgroup.Group
 	for _, user := range batchUsers {
 		user := user
 		accountData, ok := accountDataMap[user]
@@ -91,10 +89,6 @@ func (s *Service) processBatch(batchUsers []string, activeLoans map[string]*mode
 }
 
 func (s *Service) processUser(user string, accountData *UserAccountData, loan *models.Loan) error {
-	if loan == nil {
-		return s.dbWrapper.CreateOrUpdateActiveLoan(s.chain.ChainName, user)
-	}
-
 	// 计算健康因子
 	healthFactor := formatHealthFactor(accountData.HealthFactor)
 	if healthFactor == 0 {

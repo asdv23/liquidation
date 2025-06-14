@@ -30,7 +30,7 @@ func NewClient(logger *zap.Logger, chainConfigs map[string]config.ChainConfig, p
 		chains:     make(map[string]*Chain),
 	}
 
-	eg, _ := errgroup.WithContext(context.Background())
+	var eg errgroup.Group
 	for chainName, chainConfig := range chainConfigs {
 		chainName, chainConfig := chainName, chainConfig
 		eg.Go(func() error {

@@ -100,21 +100,18 @@ import (
 // 	return nil
 // }
 
-func (s *Service) updateLiquidationInfo(user string) error {
-	oldLiquidationInfo, err := s.dbWrapper.GetLiquidationInfo(s.chain.ChainName, user)
-	if err != nil {
-		return fmt.Errorf("failed to get liquidation info: %w", err)
-	}
+func (s *Service) updateLiquidationInfo(user string, loan *models.Loan) error {
 	liquidationInfo, err := s.findBestLiquidationInfo(user)
 	if err != nil {
 		return fmt.Errorf("failed to find best liquidation info: %w", err)
 	}
-	if !liquidationInfo.Cmp(oldLiquidationInfo) {
-		s.logger.Info("liquidation info changed", zap.String("user", user), zap.Any("old", oldLiquidationInfo), zap.Any("new", oldLiquidationInfo))
-	}
+	if !liquidationInfo.Cmp(loan.LiquidationInfo) {
+		s.logger.Info("liquidation info changed", zap.String("user", user), zap.Any("old", loan.LiquidationInfo), zap.Any("new", liquidationInfo))
+		loan.LiquidationInfo = liquidationInfo
 
-	if err := s.dbWrapper.UpdateActiveLoanLiquidationInfo(s.chain.ChainName, user, liquidationInfo); err != nil {
-		return fmt.Errorf("failed to update loan liquidation info: %w", err)
+		if err := s.dbWrapper.UpdateActiveLoan(s.chain.ChainName, user, loan); err != nil {
+			return fmt.Errorf("failed to update loan liquidation info: %w", err)
+		}
 	}
 
 	return nil
@@ -155,6 +152,7 @@ func (s *Service) findBestLiquidationInfo(user string) (*models.LiquidationInfo,
 	}
 
 	var liquidationInfo models.LiquidationInfo
+	userReserves := make([]*models.Reserve, 0)
 	for i, result := range results {
 		if !result.Success {
 			continue
@@ -177,6 +175,15 @@ func (s *Service) findBestLiquidationInfo(user string) (*models.LiquidationInfo,
 				liquidationInfo.DebtAmount = (*models.BigInt)(debt)
 				liquidationInfo.DebtAsset = asset.Hex()
 			}
+			userReserves = append(userReserves, &models.Reserve{
+				ChainName:           s.chain.ChainName,
+				User:                user,
+				Reserve:             asset.Hex(),
+				Amount:              (*models.BigInt)(debt),
+				AmountBase:          base,
+				IsBorrowing:         true,
+				IsUsingAsCollateral: false,
+			})
 		}
 
 		if isUsingAsCollateral(userConfig, i) {
@@ -187,7 +194,19 @@ func (s *Service) findBestLiquidationInfo(user string) (*models.LiquidationInfo,
 				liquidationInfo.CollateralAmount = (*models.BigInt)(collateral)
 				liquidationInfo.CollateralAsset = asset.Hex()
 			}
+			userReserves = append(userReserves, &models.Reserve{
+				ChainName:           s.chain.ChainName,
+				User:                user,
+				Reserve:             asset.Hex(),
+				Amount:              (*models.BigInt)(collateral),
+				AmountBase:          base,
+				IsBorrowing:         false,
+				IsUsingAsCollateral: true,
+			})
 		}
+	}
+	if err := s.dbWrapper.AddUserReserves(s.chain.ChainName, user, userReserves); err != nil {
+		return nil, fmt.Errorf("failed to add user reserves: %w", err)
 	}
 
 	return &liquidationInfo, nil
