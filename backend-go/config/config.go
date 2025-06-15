@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
@@ -59,6 +60,12 @@ func NewConfig(logger *zap.Logger, path string) (*Config, error) {
 	printConfig := config
 	printConfig.PrivateKey = "[REDACTED]"
 	logger.Info("config", zap.Any("config", printConfig))
+
+	// 从环境变量读取私钥
+	privateKey := os.Getenv("PRIVATE_KEY")
+	if privateKey != "" {
+		config.PrivateKey = privateKey
+	}
 
 	// 验证配置
 	if err := config.validate(); err != nil {

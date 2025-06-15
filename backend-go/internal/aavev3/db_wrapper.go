@@ -61,6 +61,16 @@ func (w *DBWrapper) ChainActiveLoans(chainName string) (map[string]*models.Loan,
 	return activeLoansMap, nil
 }
 
+func (w *DBWrapper) GetLiquidationLoans(ctx context.Context, chainName string) ([]*models.Loan, error) {
+	loans := make([]*models.Loan, 0)
+	if err := w.db.Where(&models.Loan{ChainName: chainName, IsActive: true}).Where(
+		"health_factor < ? AND health_factor > 0", 1,
+	).Find(&loans).Error; err != nil {
+		return nil, fmt.Errorf("failed to get liquidation loans: %w", err)
+	}
+	return loans, nil
+}
+
 func (w *DBWrapper) GetLoan(ctx context.Context, chainName, user string) (*models.Loan, error) {
 	loan := &models.Loan{}
 	if err := w.db.Where(&models.Loan{ChainName: chainName, User: user}).First(&loan).Error; err != nil {

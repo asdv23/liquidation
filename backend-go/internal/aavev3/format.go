@@ -8,6 +8,7 @@ import (
 var (
 	MIN_DEBT_USD = big.NewFloat(2)
 	USD_DECIMALS = big.NewFloat(1e8)
+	HF_DECIMALS  = big.NewFloat(1e18)
 )
 
 func formatHealthFactor(healthFactor *big.Int) float64 {
@@ -16,8 +17,8 @@ func formatHealthFactor(healthFactor *big.Int) float64 {
 	}
 
 	// 将健康因子转换为浮点数
-	f := new(big.Float).SetUint64(healthFactor.Uint64())
-	f.Quo(f, new(big.Float).SetUint64(1e18))
+	f, _ := new(big.Float).SetString(healthFactor.String())
+	f.Quo(f, HF_DECIMALS)
 	result, _ := f.Float64()
 	return result
 }

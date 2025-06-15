@@ -101,7 +101,7 @@ func (s *Service) processBatch(batchUsers []string, activeLoans map[string]*mode
 			continue
 		}
 		s.logger.Info("health factor changed", zap.String("user", user),
-			zap.Float64("lastHealthFactor", loan.HealthFactor), zap.Float64("healthFactor", healthFactor),
+			zap.Float64("lastHealthFactor", loan.HealthFactor), zap.Float64("healthFactor", healthFactor), zap.Any("acctHealthFactor", accountData.HealthFactor),
 			zap.Any("totalCollateralBase", accountData.TotalCollateralBase),
 			zap.Any("totalDebtBase", accountData.TotalDebtBase),
 			zap.Any("currentLiquidationThreshold", accountData.CurrentLiquidationThreshold),

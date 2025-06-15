@@ -38,6 +38,7 @@ type Service struct {
 	dbWrapper          *DBWrapper
 	toBeLiquidatedChan chan string
 	reservesList       []common.Address
+	liquidatingUsers   map[string]struct{}
 }
 
 // NewService 创建新的借入发现服务
@@ -50,6 +51,7 @@ func NewService(
 		chain:              chain,
 		dbWrapper:          dbWrapper,
 		toBeLiquidatedChan: make(chan string, 100),
+		liquidatingUsers:   make(map[string]struct{}),
 		reservesList:       make([]common.Address, 0),
 	}
 	chain.Register(s.Initialize)
@@ -102,44 +104,63 @@ func (s *Service) startHealthFactorChecker(ctx context.Context) error {
 }
 
 func (s *Service) startLiquidationChecker(ctx context.Context) error {
+	go func() {
+		loans, err := s.dbWrapper.GetLiquidationLoans(ctx, s.chain.ChainName)
+		if err != nil {
+			s.logger.Error("failed to get liquidation infos", zap.Error(err))
+			return
+		}
+		s.logger.Info("found liquidation loans", zap.Int("count", len(loans)))
+		for _, loan := range loans {
+			s.toBeLiquidatedChan <- loan.User
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case user := <-s.toBeLiquidatedChan:
 			s.logger.Info("liquidating loan", zap.String("user", user))
-
-			loan, err := s.dbWrapper.GetLoan(ctx, s.chain.ChainName, user)
-			if err != nil {
-				s.logger.Error("failed to get loan", zap.Error(err))
+			if _, ok := s.liquidatingUsers[user]; ok {
+				s.logger.Info("already liquidating", zap.String("user", user))
 				continue
 			}
+			s.liquidatingUsers[user] = struct{}{}
 
-			go func() {
-				ctx, cancel := context.WithCancel(ctx)
+			go func(user string) {
+				liquidationCtx, cancel := context.WithCancel(ctx)
 				defer cancel()
+
+				loan, err := s.dbWrapper.GetLoan(ctx, s.chain.ChainName, user)
+				if err != nil {
+					s.logger.Error("failed to get loan", zap.Error(err))
+					return
+				}
+
+				s.logger.Info("executing liquidation", zap.String("user", user), zap.Float64("healthFactor", loan.HealthFactor))
+				if err := s.executeLiquidation(liquidationCtx, loan); err != nil {
+					s.logger.Error("failed to execute liquidation", zap.Error(err))
+					return
+				}
+
 				for {
 					select {
 					case <-ctx.Done():
 						return
-					case <-time.After(100 * time.Millisecond):
+					case <-time.After(400 * time.Millisecond):
+						loan, err := s.dbWrapper.GetLoan(ctx, s.chain.ChainName, user)
+						if err != nil {
+							s.logger.Error("failed to get loan", zap.Error(err))
+							continue
+						}
 						if loan.HealthFactor >= 1 {
 							s.logger.Info("health factor above liquidation threshold, exit liquidation loop", zap.String("user", user))
 							return
 						}
-						if err := s.executeLiquidation(ctx, loan); err != nil {
-							s.logger.Error("failed to execute liquidation", zap.Error(err))
-						}
-
-						newLoan, err := s.dbWrapper.GetLoan(ctx, loan.ChainName, loan.User)
-						if err != nil {
-							s.logger.Error("failed to get loan", zap.Error(err))
-							return
-						}
-						loan = newLoan
 					}
 				}
-			}()
+			}(user)
 		}
 	}
 }

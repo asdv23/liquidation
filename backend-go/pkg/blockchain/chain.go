@@ -76,20 +76,26 @@ func (c *Chain) connect() error {
 	if err != nil {
 		return fmt.Errorf("failed to dial ws: %w", err)
 	}
-	chainID, err := wsClient.ChainID(context.Background())
+	chainID, err := wsClient.ChainID(c.Ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get chain id: %w", err)
 	}
+	header, err := wsClient.HeaderByNumber(c.Ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to get header: %w", err)
+	}
 	c.ChainID = chainID
 	c.client = wsClient
+	c.baseFee = header.BaseFee
 
 	// 创建认证
+	key, err := crypto.HexToECDSA(strings.TrimPrefix(c.privateKey, "0x"))
+	if err != nil {
+		return fmt.Errorf("failed to parse private key: %w", err)
+	}
+	c.Logger.Info("liquidator", zap.String("address", crypto.PubkeyToAddress(key.PublicKey).Hex()))
 
 	c.auth = func() (*bind.TransactOpts, error) {
-		key, err := crypto.HexToECDSA(c.privateKey)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse private key: %w", err)
-		}
 		auth, err := bind.NewKeyedTransactorWithChainID(key, c.ChainID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create auth: %w", err)
@@ -134,7 +140,10 @@ func (c *Chain) subscribe() {
 			return
 		case header := <-headers:
 			c.Logger.Debug("New block", zap.Uint64("blockNumber", header.Number.Uint64()))
-			c.baseFee = header.BaseFee
+			if c.baseFee.Cmp(header.BaseFee) != 0 {
+				c.baseFee = header.BaseFee
+				c.Logger.Info("New base fee", zap.String("baseFee", header.BaseFee.String()))
+			}
 		}
 	}
 }
