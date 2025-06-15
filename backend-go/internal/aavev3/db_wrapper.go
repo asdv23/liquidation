@@ -23,12 +23,16 @@ func (w *DBWrapper) GetDB() *gorm.DB {
 	return w.db
 }
 
-func (w *DBWrapper) ListTokenInfos(chainName string) ([]*models.Token, error) {
+func (w *DBWrapper) GetTokenInfoMap(chainName string) (map[string]*models.Token, error) {
 	token := make([]*models.Token, 0)
 	if err := w.db.Where(&models.Token{ChainName: chainName}).Find(&token).Error; err != nil {
 		return nil, fmt.Errorf("failed to get token infos: %w", err)
 	}
-	return token, nil
+	tokenMap := make(map[string]*models.Token, 0)
+	for _, t := range token {
+		tokenMap[t.Address] = t
+	}
+	return tokenMap, nil
 }
 
 func (w *DBWrapper) GetTokenInfo(chainName string, address string) (*models.Token, error) {

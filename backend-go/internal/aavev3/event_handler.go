@@ -92,16 +92,6 @@ func (s *Service) handleBorrowEvent(event *aavev3.PoolBorrow) {
 	}
 }
 
-func (s *Service) infoAmount(msg, reserve string, amount *big.Int) {
-	if tokenInfo, err := s.dbWrapper.GetTokenInfo(s.chain.ChainName, reserve); err != nil {
-		s.logger.Info(" - ", zap.Any(msg, amount.String()), zap.Error(err))
-	} else {
-		s.logger.Info(" - ", zap.Any(msg, formatAmount(amount, tokenInfo.Decimals.BigInt())+" "+tokenInfo.Symbol))
-		s.logger.Info(" - ", zap.Any(msg+"USD", amountToUSD(amount, tokenInfo.Decimals.BigInt(), tokenInfo.Price.BigInt())))
-		s.logger.Info(" - ", zap.Any("Price", big.NewFloat(0).Quo(big.NewFloat(0).SetInt((*big.Int)(tokenInfo.Price)), USD_DECIMALS)))
-	}
-}
-
 func (s *Service) handleRepayEvent(event *aavev3.PoolRepay) {
 	s.logger.Info("repay event 😢", zap.Any("user", event.User.Hex()))
 	s.logger.Info(" - ", zap.Any("Reserve", event.Reserve.Hex()))
@@ -161,10 +151,20 @@ func (s *Service) updateLoan(user string) error {
 		return fmt.Errorf("failed to create or update loan: %w", err)
 	}
 
-	// update health factor
-	if err := s.syncHeallthFactorForUser(user, loan); err != nil {
-		s.logger.Error("failed to update health factor", zap.Error(err), zap.String("user", user))
+	// check health factor
+	if err := s.checkHealthFactorForUser(user, loan); err != nil {
+		s.logger.Error("failed to check health factor", zap.Error(err), zap.String("user", user))
 	}
 
 	return nil
+}
+
+func (s *Service) infoAmount(msg, reserve string, amount *big.Int) {
+	if tokenInfo, err := s.dbWrapper.GetTokenInfo(s.chain.ChainName, reserve); err != nil {
+		s.logger.Info(" - ", zap.Any(msg, amount.String()), zap.Error(err))
+	} else {
+		s.logger.Info(" - ", zap.Any(msg, formatAmount(amount, tokenInfo.Decimals.BigInt())+" "+tokenInfo.Symbol))
+		s.logger.Info(" - ", zap.Any(msg+"USD", amountToUSD(amount, tokenInfo.Decimals.BigInt(), tokenInfo.Price.BigInt())))
+		s.logger.Info(" - ", zap.Any("Price", big.NewFloat(0).Quo(big.NewFloat(0).SetInt((*big.Int)(tokenInfo.Price)), USD_DECIMALS)))
+	}
 }

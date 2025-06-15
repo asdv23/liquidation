@@ -8,7 +8,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func (s *Service) syncHeallthFactorForUser(user string, loan *models.Loan) error {
+func (s *Service) checkHealthFactorForUser(user string, loan *models.Loan) error {
 	return s.processBatch([]string{user}, map[string]*models.Loan{user: loan}, true)
 }
 

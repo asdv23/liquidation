@@ -22,12 +22,12 @@ func (s *Service) startPriceStream(ctx context.Context) error {
 			if err != nil {
 				return fmt.Errorf("failed to get assets prices: %w", err)
 			}
-			tokenInfos, err := s.dbWrapper.ListTokenInfos(s.chain.ChainName)
+			tokenInfoMap, err := s.dbWrapper.GetTokenInfoMap(s.chain.ChainName)
 			if err != nil {
 				return fmt.Errorf("failed to get token infos: %w", err)
 			}
 			for i, price := range prices {
-				tokenInfo := tokenInfos[i]
+				tokenInfo := tokenInfoMap[s.reservesList[i].Hex()]
 				if tokenInfo.Price.BigInt().Cmp(price) == 0 {
 					continue
 				}
