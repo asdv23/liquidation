@@ -4,7 +4,6 @@ import (
 	"fmt"
 	aavev3 "liquidation-bot/bindings/aavev3"
 	bindings "liquidation-bot/bindings/common"
-	"liquidation-bot/internal/models"
 	"liquidation-bot/internal/utils"
 	"liquidation-bot/pkg/blockchain"
 	"math/big"
@@ -200,14 +199,6 @@ func (s *Service) updateReservesListAndPrice() error {
 	}
 	decimalsCalls, symbolsCalls := make([]bindings.Multicall3Call3, 0), make([]bindings.Multicall3Call3, 0)
 
-	// price
-	abi, err := aavev3.AaveOracleMetaData.GetAbi()
-	if err != nil {
-		return fmt.Errorf("failed to get aave oracle abi: %w", err)
-	}
-	target := s.chain.GetContracts().Addresses[blockchain.ContractTypePriceOracle]
-
-	getReservesPriceCalls := make([]bindings.Multicall3Call3, 0)
 	for _, reserve := range reservesList {
 		symbolsCall, decimalsCall, err := getSymbolAndDecimalsMulticall3Call3(erc20Abi, reserve)
 		if err != nil {
@@ -215,21 +206,15 @@ func (s *Service) updateReservesListAndPrice() error {
 		}
 		decimalsCalls = append(decimalsCalls, decimalsCall)
 		symbolsCalls = append(symbolsCalls, symbolsCall)
-
-		callData, err := abi.Pack("getAssetPrice", reserve)
-		if err != nil {
-			return fmt.Errorf("failed to pack get asset price call: %w", err)
-		}
-
-		getReservesPriceCalls = append(getReservesPriceCalls, bindings.Multicall3Call3{
-			Target:   target,
-			CallData: callData,
-		})
+	}
+	prices, err := s.chain.GetContracts().PriceOracle.GetAssetsPrices(callOpts, reservesList)
+	if err != nil {
+		return fmt.Errorf("failed to get assets prices: %w", err)
 	}
 
 	var symbolsResults []bindings.Multicall3Result
 	var decimalsResults []bindings.Multicall3Result
-	var results []bindings.Multicall3Result
+	// var results []bindings.Multicall3Result
 	var eg errgroup.Group
 	eg.Go(func() error {
 		symbolsResults, err = utils.Aggregate3(callOpts, s.chain.GetContracts().Multicall3, symbolsCalls)
@@ -245,19 +230,11 @@ func (s *Service) updateReservesListAndPrice() error {
 		}
 		return nil
 	})
-	eg.Go(func() error {
-		results, err = utils.Aggregate3(callOpts, s.chain.GetContracts().Multicall3, getReservesPriceCalls)
-		if err != nil {
-			return fmt.Errorf("failed to get reserves price: %w", err)
-		}
-		return nil
-	})
 	if err := eg.Wait(); err != nil {
 		return fmt.Errorf("failed to update reserves list and price: %w", err)
 	}
 
-	for i, result := range results {
-		price := new(big.Int).SetBytes(result.ReturnData)
+	for i, price := range prices {
 		decimals := new(big.Int).SetBytes(decimalsResults[i].ReturnData)
 		symbol := decodeSymbol(symbolsResults[i].ReturnData, erc20Abi)
 		if _, err := s.dbWrapper.AddTokenInfo(s.chain.ChainName, reservesList[i].Hex(), symbol, decimals, price); err != nil {
@@ -267,41 +244,6 @@ func (s *Service) updateReservesListAndPrice() error {
 
 	s.logger.Info("updateReservesListAndPrice", zap.Any("len", len(reservesList)), zap.Any("elapsed", time.Since(now)))
 	return nil
-}
-
-func (s *Service) createTokenInfoFromChain(asset string) (*models.Token, error) {
-	s.logger.Warn("find new token", zap.String("asset", asset))
-	erc20Abi, err := bindings.ERC20MetaData.GetAbi()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get erc20 abi: %w", err)
-	}
-
-	symbolCall, decimalsCall, err := getSymbolAndDecimalsMulticall3Call3(erc20Abi, common.HexToAddress(asset))
-	if err != nil {
-		return nil, fmt.Errorf("failed to get symbol and decimals call data: %w", err)
-	}
-
-	callOpts, cancel := s.getCallOpts()
-	defer cancel()
-
-	symbolsResults, err := utils.Aggregate3(callOpts, s.chain.GetContracts().Multicall3, []bindings.Multicall3Call3{symbolCall})
-	if err != nil {
-		return nil, fmt.Errorf("failed to get symbols: %w", err)
-	}
-	decimalsResults, err := utils.Aggregate3(callOpts, s.chain.GetContracts().Multicall3, []bindings.Multicall3Call3{decimalsCall})
-	if err != nil {
-		return nil, fmt.Errorf("failed to get decimals: %w", err)
-	}
-
-	symbol := decodeSymbol(symbolsResults[0].ReturnData, erc20Abi)
-	decimals := new(big.Int).SetBytes(decimalsResults[0].ReturnData)
-
-	token, err := s.dbWrapper.AddTokenInfo(s.chain.ChainName, asset, symbol, decimals, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to add token info: %w", err)
-	}
-
-	return token, nil
 }
 
 func (s *Service) getUserReserveDataBatch(user string, userConfig *aavev3.DataTypesUserConfigurationMap) ([]*UserReserveData, error) {

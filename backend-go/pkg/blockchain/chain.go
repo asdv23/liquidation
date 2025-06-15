@@ -108,6 +108,7 @@ func (c *Chain) connect() error {
 		return fmt.Errorf("failed to create contracts: %w", err)
 	}
 	c.contracts = contracts
+	c.Logger.Info("contract addresses", zap.Any("contracts", c.contracts.Addresses))
 
 	// 连接成功后订阅事件
 	go c.subscribe()

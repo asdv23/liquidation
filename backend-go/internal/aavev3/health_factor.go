@@ -20,29 +20,18 @@ const (
 	batchSize = 100 // 每批处理的用户数量
 )
 
-func (s *Service) syncHealthFactorsForAll() {
-	activeLoans, err := s.dbWrapper.ChainActiveLoans(s.chain.ChainName)
-	if err != nil {
-		s.logger.Error("failed to get active loans", zap.Error(err))
-		return
-	}
-	if len(activeLoans) == 0 {
-		s.logger.Info("no active loans")
-		return
+func (s *Service) checkHealthFactor(loans []*models.Loan) error {
+	if len(loans) == 0 {
+		s.logger.Info("no loans to check health factor")
+		return nil
 	}
 
 	// 收集需要检查的用户
+	loansMap := make(map[string]*models.Loan)
 	var usersToCheck []string
-	for user := range activeLoans {
-		usersToCheck = append(usersToCheck, user)
-	}
-	if len(usersToCheck) == 0 {
-		return
-	}
-
-	if err := s.updateReservesListAndPrice(); err != nil {
-		s.logger.Error("failed to update reserves list and price", zap.Error(err))
-		return
+	for _, loan := range loans {
+		loansMap[loan.User] = loan
+		usersToCheck = append(usersToCheck, loan.User)
 	}
 
 	// 分批处理
@@ -54,12 +43,11 @@ func (s *Service) syncHealthFactorsForAll() {
 		s.logger.Info("processing batch", zap.Int("i", i), zap.Int("total", len(usersToCheck)), zap.Int("batchSize", batchSize))
 
 		batch := usersToCheck[i:end]
-		if err := s.processBatch(batch, activeLoans, false); err != nil {
-			s.logger.Error("Failed to process batch",
-				zap.String("chain", s.chain.ChainName),
-				zap.Error(err))
+		if err := s.processBatch(batch, loansMap, false); err != nil {
+			return fmt.Errorf("failed to process batch: %w", err)
 		}
 	}
+	return nil
 }
 
 func (s *Service) processBatch(batchUsers []string, activeLoans map[string]*models.Loan, findBestLiquidationInfos bool) error {

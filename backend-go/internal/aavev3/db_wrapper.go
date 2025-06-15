@@ -23,6 +23,14 @@ func (w *DBWrapper) GetDB() *gorm.DB {
 	return w.db
 }
 
+func (w *DBWrapper) ListTokenInfos(chainName string) ([]*models.Token, error) {
+	token := make([]*models.Token, 0)
+	if err := w.db.Where(&models.Token{ChainName: chainName}).Find(&token).Error; err != nil {
+		return nil, fmt.Errorf("failed to get token infos: %w", err)
+	}
+	return token, nil
+}
+
 func (w *DBWrapper) GetTokenInfo(chainName string, address string) (*models.Token, error) {
 	token := &models.Token{}
 	if err := w.db.Where(&models.Token{ChainName: chainName, Address: address}).First(&token).Error; err != nil {
@@ -48,17 +56,49 @@ func (w *DBWrapper) AddTokenInfo(chainName string, address string, symbol string
 	return token, nil
 }
 
+func (w *DBWrapper) UpdateTokenPrice(chainName string, address string, price *models.BigInt) error {
+	if err := w.db.Model(&models.Token{}).Where(&models.Token{ChainName: chainName, Address: address}).
+		Where("price <> ?", price).
+		Update("price", price).Error; err != nil {
+		return fmt.Errorf("failed to update token price: %w", err)
+	}
+	return nil
+}
+
 // user -> loan
-func (w *DBWrapper) ChainActiveLoans(chainName string) (map[string]*models.Loan, error) {
+func (w *DBWrapper) ChainActiveLoans(chainName string) ([]*models.Loan, error) {
 	loans := make([]*models.Loan, 0)
 	if err := w.db.Where(&models.Loan{ChainName: chainName, IsActive: true}).Find(&loans).Error; err != nil {
 		return nil, fmt.Errorf("failed to get active loans: %w", err)
 	}
-	activeLoansMap := make(map[string]*models.Loan)
-	for _, loan := range loans {
-		activeLoansMap[loan.User] = loan
+	return loans, nil
+}
+
+func (w *DBWrapper) GetActiveLoansByToken(chainName string, tokenAddress string) ([]*models.Loan, error) {
+	loans := make([]*models.Loan, 0)
+
+	reserves := make([]*models.Reserve, 0)
+	if err := w.db.Model(&models.Reserve{}).Where("chain_name = ? AND reserve = ?", chainName, tokenAddress).
+		Where("is_using_as_collateral = ? OR is_borrowing = ?", true, true).
+		Find(&reserves).Error; err != nil {
+		return nil, fmt.Errorf("failed to get active loans by token: %w", err)
 	}
-	return activeLoansMap, nil
+
+	userMap := make(map[string]struct{}, 0)
+	for _, reserve := range reserves {
+		userMap[reserve.User] = struct{}{}
+	}
+
+	users := make([]string, 0)
+	for user := range userMap {
+		users = append(users, user)
+	}
+
+	if err := w.db.Where(&models.Loan{ChainName: chainName, IsActive: true}).Where("user IN (?)", users).
+		Find(&loans).Error; err != nil {
+		return nil, fmt.Errorf("failed to get active loans by token: %w", err)
+	}
+	return loans, nil
 }
 
 func (w *DBWrapper) GetLiquidationLoans(ctx context.Context, chainName string) ([]*models.Loan, error) {

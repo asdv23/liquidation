@@ -4,12 +4,10 @@ import (
 	"context"
 	"fmt"
 	aavev3 "liquidation-bot/bindings/aavev3"
-	"liquidation-bot/internal/models"
 	"liquidation-bot/pkg/blockchain"
 	"math/big"
 
 	"go.uber.org/zap"
-	"gorm.io/gorm"
 )
 
 func (s *Service) handleEvents(ctx context.Context) error {
@@ -95,28 +93,13 @@ func (s *Service) handleBorrowEvent(event *aavev3.PoolBorrow) {
 }
 
 func (s *Service) infoAmount(msg, reserve string, amount *big.Int) {
-	if tokenInfo, err := s.getTokenInfo(reserve); err != nil {
+	if tokenInfo, err := s.dbWrapper.GetTokenInfo(s.chain.ChainName, reserve); err != nil {
 		s.logger.Info(" - ", zap.Any(msg, amount.String()), zap.Error(err))
 	} else {
 		s.logger.Info(" - ", zap.Any(msg, formatAmount(amount, tokenInfo.Decimals.BigInt())+" "+tokenInfo.Symbol))
 		s.logger.Info(" - ", zap.Any(msg+"USD", amountToUSD(amount, tokenInfo.Decimals.BigInt(), tokenInfo.Price.BigInt())))
 		s.logger.Info(" - ", zap.Any("Price", big.NewFloat(0).Quo(big.NewFloat(0).SetInt((*big.Int)(tokenInfo.Price)), USD_DECIMALS)))
 	}
-}
-
-func (s *Service) getTokenInfo(reserve string) (*models.Token, error) {
-	tokenInfo, err := s.dbWrapper.GetTokenInfo(s.chain.ChainName, reserve)
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			tokenInfo, err = s.createTokenInfoFromChain(reserve)
-			if err != nil {
-				return nil, fmt.Errorf("failed to get token info from chain: %w", err)
-			}
-		} else {
-			return nil, fmt.Errorf("failed to get token info: %w", err)
-		}
-	}
-	return tokenInfo, nil
 }
 
 func (s *Service) handleRepayEvent(event *aavev3.PoolRepay) {
