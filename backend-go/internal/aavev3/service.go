@@ -1,19 +1,13 @@
 package aavev3
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	aavev3 "liquidation-bot/bindings/aavev3"
-	bindings "liquidation-bot/bindings/common"
-	"liquidation-bot/internal/utils"
 	"liquidation-bot/pkg/blockchain"
-	"math/big"
 	"sync"
 	"time"
 
 	"github.com/avast/retry-go/v4"
-	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/zap"
@@ -78,10 +72,6 @@ func (s *Service) Initialize() {
 		eg.Go(func() error {
 			return s.startHealthFactorChecker(ctx)
 		})
-		// 4. 启动储备检查
-		eg.Go(func() error {
-			return s.startReservesChecker(ctx)
-		})
 		if err := eg.Wait(); err != nil {
 			s.logger.Error("failed to initialize service", zap.Error(err))
 			return fmt.Errorf("failed to initialize service: %w", err)
@@ -96,7 +86,7 @@ func (s *Service) Initialize() {
 // startHealthFactorChecker 启动健康因子检查
 func (s *Service) startHealthFactorChecker(ctx context.Context) error {
 	for {
-		s.checkHealthFactorsBatch()
+		s.syncHealthFactorsForAll()
 
 		select {
 		case <-ctx.Done():
@@ -104,105 +94,6 @@ func (s *Service) startHealthFactorChecker(ctx context.Context) error {
 		case <-time.After(5 * time.Minute):
 		}
 	}
-}
-
-// startReservesChecker 启动储备检查
-func (s *Service) startReservesChecker(ctx context.Context) error {
-	for {
-		callOpts, cancel := s.getCallOpts()
-		defer cancel()
-
-		reservesList, err := s.chain.GetContracts().AaveV3Pool.GetReservesList(callOpts)
-		if err != nil {
-			return fmt.Errorf("failed to get reserves list: %w", err)
-		}
-		s.reservesList = reservesList
-
-		// token
-		erc20Abi, err := bindings.ERC20MetaData.GetAbi()
-		if err != nil {
-			return fmt.Errorf("failed to get erc20 abi: %w", err)
-		}
-		decimalsCalls, symbolsCalls := make([]bindings.Multicall3Call3, 0), make([]bindings.Multicall3Call3, 0)
-
-		// price
-		abi, err := aavev3.AaveOracleMetaData.GetAbi()
-		if err != nil {
-			return fmt.Errorf("failed to get aave oracle abi: %w", err)
-		}
-		target := s.chain.GetContracts().Addresses[blockchain.ContractTypePriceOracle]
-
-		getReservesPriceCalls := make([]bindings.Multicall3Call3, 0)
-		for _, reserve := range reservesList {
-			decimalsCallData, err := erc20Abi.Pack("decimals")
-			if err != nil {
-				return fmt.Errorf("failed to pack decimals call: %w", err)
-			}
-			symbolsCallData, err := erc20Abi.Pack("symbol")
-			if err != nil {
-				return fmt.Errorf("failed to pack symbol call: %w", err)
-			}
-
-			callData, err := abi.Pack("getAssetPrice", reserve)
-			if err != nil {
-				return fmt.Errorf("failed to pack get asset price call: %w", err)
-			}
-
-			decimalsCalls = append(decimalsCalls, bindings.Multicall3Call3{
-				Target:   reserve,
-				CallData: decimalsCallData,
-			})
-
-			symbolsCalls = append(symbolsCalls, bindings.Multicall3Call3{
-				Target:   reserve,
-				CallData: symbolsCallData,
-			})
-
-			getReservesPriceCalls = append(getReservesPriceCalls, bindings.Multicall3Call3{
-				Target:   target,
-				CallData: callData,
-			})
-		}
-
-		symbolsResults, err := utils.Aggregate3(callOpts, s.chain.GetContracts().Multicall3, symbolsCalls)
-		if err != nil {
-			return fmt.Errorf("failed to get symbols: %w", err)
-		}
-		decimalsResults, err := utils.Aggregate3(callOpts, s.chain.GetContracts().Multicall3, decimalsCalls)
-		if err != nil {
-			return fmt.Errorf("failed to get decimals: %w", err)
-		}
-
-		results, err := utils.Aggregate3(callOpts, s.chain.GetContracts().Multicall3, getReservesPriceCalls)
-		if err != nil {
-			return fmt.Errorf("failed to get reserves price: %w", err)
-		}
-		for i, result := range results {
-			price := new(big.Int).SetBytes(result.ReturnData)
-			decimals := new(big.Int).SetBytes(decimalsResults[i].ReturnData)
-			symbol := decodeSymbol(symbolsResults[i].ReturnData, erc20Abi)
-			s.logger.Info("reserves price", zap.String("reserve", reservesList[i].Hex()), zap.String("price", price.String()), zap.String("decimals", decimals.String()), zap.String("symbol", symbol))
-			if _, err := s.dbWrapper.AddTokenInfo(s.chain.ChainName, reservesList[i].Hex(), symbol, decimals, price); err != nil {
-				return fmt.Errorf("failed to add token info: %w", err)
-			}
-		}
-
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-time.After(5 * time.Minute):
-		}
-	}
-}
-
-func decodeSymbol(returnData []byte, erc20Abi *abi.ABI) string {
-	var symbol string
-	err := erc20Abi.UnpackIntoInterface(&symbol, "symbol", returnData)
-	if err != nil {
-		return string(bytes.TrimRight(returnData, "\x00"))
-	}
-
-	return symbol
 }
 
 func (s *Service) getCallOpts() (*bind.CallOpts, context.CancelFunc) {

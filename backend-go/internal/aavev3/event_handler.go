@@ -179,7 +179,7 @@ func (s *Service) updateLoan(user string) error {
 	}
 
 	// update health factor
-	if err := s.updateHealthFactorViaEvent(user, loan); err != nil {
+	if err := s.syncHeallthFactorForUser(user, loan); err != nil {
 		s.logger.Error("failed to update health factor", zap.Error(err), zap.String("user", user))
 	}
 

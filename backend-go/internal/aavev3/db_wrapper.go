@@ -50,7 +50,7 @@ func (w *DBWrapper) AddTokenInfo(chainName string, address string, symbol string
 // user -> loan
 func (w *DBWrapper) ChainActiveLoans(chainName string) (map[string]*models.Loan, error) {
 	loans := make([]*models.Loan, 0)
-	if err := w.db.Where(&models.Loan{ChainName: chainName}).Find(&loans).Error; err != nil {
+	if err := w.db.Where(&models.Loan{ChainName: chainName, IsActive: true}).Find(&loans).Error; err != nil {
 		return nil, fmt.Errorf("failed to get active loans: %w", err)
 	}
 	activeLoansMap := make(map[string]*models.Loan)

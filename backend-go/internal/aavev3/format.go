@@ -22,22 +22,6 @@ func formatHealthFactor(healthFactor *big.Int) float64 {
 	return result
 }
 
-func parseAmount(amount string, decimals uint8) (*big.Int, error) {
-	// 解析金额
-	f, _, err := new(big.Float).Parse(amount, 10)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse amount: %w", err)
-	}
-
-	// 转换为整数
-	scale := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil))
-	f.Mul(f, scale)
-
-	// 转换为 big.Int
-	result, _ := f.Int(nil)
-	return result, nil
-}
-
 // 辅助方法
 func formatAmount(amount, decimals *big.Int) string {
 	if amount == nil {
@@ -91,3 +75,9 @@ func USDToAmount(usd float64, decimals int, price *big.Int) *big.Int {
 	result, _ := amount.Int(nil)
 	return result
 }
+
+// func checkUSDEqual(old, new *big.Int) bool {
+// 	oldUSD := big.NewFloat(0).Quo(big.NewFloat(0).SetInt(old), USD_DECIMALS)
+// 	newUSD := big.NewFloat(0).Quo(big.NewFloat(0).SetInt(new), USD_DECIMALS)
+// 	return fmt.Sprintf("%0.2f", oldUSD) == fmt.Sprintf("%0.2f", newUSD)
+// }

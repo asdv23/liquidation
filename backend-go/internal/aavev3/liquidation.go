@@ -3,10 +3,7 @@ package aavev3
 import (
 	"fmt"
 	aavev3 "liquidation-bot/bindings/aavev3"
-	bindings "liquidation-bot/bindings/common"
 	"liquidation-bot/internal/models"
-	"liquidation-bot/internal/utils"
-	"liquidation-bot/pkg/blockchain"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -22,51 +19,6 @@ import (
 // 	"github.com/ethereum/go-ethereum/core/types"
 // 	"go.uber.org/zap"
 // )
-
-// func (s *Service) getLiquidationInfo(user string, healthFactor float64) (*LiquidationInfo, error) {
-// 	// 检查缓存
-// 	if info, ok := s.liquidationInfoCache[user]; ok {
-// 		return info, nil
-// 	}
-
-// 	// 获取用户账户数据
-// 	// accountData, err := s.getUserAccountData(user)
-// 	// if err != nil {
-// 	// 	return nil, fmt.Errorf("failed to get user account data: %w", err)
-// 	// }
-
-// 	// 获取用户资产列表
-// 	assets, err := s.getUserAssets(user)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("failed to get user assets: %w", err)
-// 	}
-
-// 	// 计算清算信息
-// 	info := &LiquidationInfo{
-// 		User:             user,
-// 		HealthFactor:     healthFactor,
-// 		LastUpdated:      &time.Time{},
-// 		CollateralAssets: make([]string, 0),
-// 		DebtAssets:       make([]string, 0),
-// 		CollateralPrices: make(map[string]*big.Int),
-// 		DebtPrices:       make(map[string]*big.Int),
-// 	}
-
-// 	// 处理抵押品
-// 	for _, asset := range assets {
-// 		if asset.IsCollateral {
-// 			info.CollateralAssets = append(info.CollateralAssets, asset.Address)
-// 			info.CollateralPrices[asset.Address] = asset.Price
-// 		} else {
-// 			info.DebtAssets = append(info.DebtAssets, asset.Address)
-// 			info.DebtPrices[asset.Address] = asset.Price
-// 		}
-// 	}
-
-// 	// 更新缓存
-// 	s.liquidationInfoCache[user] = info
-// 	return info, nil
-// }
 
 // func (s *Service) executeLiquidation(user string, healthFactor float64) error {
 // 	// 获取清算信息
@@ -106,6 +58,7 @@ func (s *Service) findBestLiquidationInfos(liquidationInfos []*UpdateLiquidation
 		users = append(users, liquidationInfo.User)
 	}
 
+	// TODO - 价格变化时，user config 不会变化
 	userConfigs, err := s.getUserConfigurationForBatch(users)
 	if err != nil {
 		return fmt.Errorf("failed to get user configurations: %w", err)
@@ -114,23 +67,19 @@ func (s *Service) findBestLiquidationInfos(liquidationInfos []*UpdateLiquidation
 		return fmt.Errorf("user configs length mismatch")
 	}
 
-	deactivateUsers := make([]string, 0)
 	for i, userConfig := range userConfigs {
 		info := liquidationInfos[i]
-		liquidationInfo, err := s.findBestLiquidationInfo(info.User, userConfig)
+		liquidationInfo, err := s.findBestLiquidationInfo(info.User, userConfig) // 最好是链下计算
 		if err != nil {
 			return fmt.Errorf("failed to find best liquidation info: %w", err)
 		}
-		if liquidationInfo.TotalCollateralBase.BigInt().Cmp(big.NewInt(0)) == 0 || liquidationInfo.TotalDebtBase.BigInt().Cmp(big.NewInt(0)) == 0 {
-			deactivateUsers = append(deactivateUsers, info.User)
-			continue
-		}
-		if !checkUSDEqual(info.LiquidationInfo.TotalCollateralBase.BigInt(), liquidationInfo.TotalCollateralBase.BigInt()) {
-			s.logger.Info("calculate collateral base is not equal ❌", zap.String("user", info.User), zap.Any("info collateral base", info.LiquidationInfo.TotalCollateralBase.BigInt()), zap.Any("liquidationInfo collateral base", liquidationInfo.TotalCollateralBase.BigInt()))
-		}
-		if !checkUSDEqual(info.LiquidationInfo.TotalDebtBase.BigInt(), liquidationInfo.TotalDebtBase.BigInt()) {
-			s.logger.Info("calculate debt base is not equal ❌", zap.String("user", info.User), zap.Any("info debt base", info.LiquidationInfo.TotalDebtBase.BigInt()), zap.Any("liquidationInfo debt base", liquidationInfo.TotalDebtBase.BigInt()))
-		}
+		// userReserves不是和 total 同时查询，当存在数量和价格变化时，userReserves 和 total 就会不一致
+		// if !checkUSDEqual(info.LiquidationInfo.TotalCollateralBase.BigInt(), liquidationInfo.TotalCollateralBase.BigInt()) {
+		// 	s.logger.Info("calculate collateral base is not equal ❌❌", zap.String("user", info.User), zap.Any("info collateral base", info.LiquidationInfo.TotalCollateralBase.BigInt()), zap.Any("liquidationInfo collateral base", liquidationInfo.TotalCollateralBase.BigInt()))
+		// }
+		// if !checkUSDEqual(info.LiquidationInfo.TotalDebtBase.BigInt(), liquidationInfo.TotalDebtBase.BigInt()) {
+		// 	s.logger.Info("calculate debt base is not equal ❌❌❌", zap.String("user", info.User), zap.Any("info debt base", info.LiquidationInfo.TotalDebtBase.BigInt()), zap.Any("liquidationInfo debt base", liquidationInfo.TotalDebtBase.BigInt()))
+		// }
 		liquidationInfo.TotalCollateralBase = models.NewBigInt(info.LiquidationInfo.TotalCollateralBase.BigInt())
 		liquidationInfo.TotalDebtBase = models.NewBigInt(info.LiquidationInfo.TotalDebtBase.BigInt())
 		liquidationInfo.LiquidationThreshold = models.NewBigInt(info.LiquidationInfo.LiquidationThreshold.BigInt())
@@ -152,44 +101,13 @@ func (s *Service) findBestLiquidationInfos(liquidationInfos []*UpdateLiquidation
 		}
 	}
 
-	if len(deactivateUsers) > 0 {
-		s.logger.Info("deactivate users because of no collateral or debt for liquidation", zap.Any("users", deactivateUsers))
-		if err := s.dbWrapper.DeactivateActiveLoan(s.chain.ChainName, deactivateUsers); err != nil {
-			return fmt.Errorf("failed to deactivate active loan: %w", err)
-		}
-	}
-
 	return nil
 }
 
 func (s *Service) findBestLiquidationInfo(user string, userConfig *aavev3.DataTypesUserConfigurationMap) (*models.LiquidationInfo, error) {
-	abi, err := aavev3.AaveProtocolDataProviderMetaData.GetAbi()
+	userReserveDatas, err := s.getUserReserveDataBatch(user, userConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get abi: %w", err)
-	}
-	target := s.chain.GetContracts().Addresses[blockchain.ContractTypeDataProvider]
-
-	// 遍历所有可能的清算对
-	getUserReserveDataCalls := make([]bindings.Multicall3Call3, 0)
-	for reserveIndex, reserve := range s.reservesList {
-		if isUsingAsCollateralOrBorrowing(userConfig, reserveIndex) {
-			callData, err := abi.Pack("getUserReserveData", reserve, common.HexToAddress(user))
-			if err != nil {
-				return nil, fmt.Errorf("failed to pack getUserReserveData call: %w", err)
-			}
-			getUserReserveDataCalls = append(getUserReserveDataCalls, bindings.Multicall3Call3{
-				Target:   target,
-				CallData: callData,
-			})
-		}
-	}
-
-	// 执行模拟调用
-	callOpts, cancel := s.getCallOpts()
-	defer cancel()
-	results, err := utils.Aggregate3(callOpts, s.chain.GetContracts().Multicall3, getUserReserveDataCalls)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse aggregate3 result: %w", err)
+		return nil, fmt.Errorf("failed to get user reserve data: %w", err)
 	}
 
 	liquidationInfo := models.LiquidationInfo{
@@ -208,10 +126,7 @@ func (s *Service) findBestLiquidationInfo(user string, userConfig *aavev3.DataTy
 			continue
 		}
 
-		var userReserveData UserReserveData
-		if err := abi.UnpackIntoInterface(&userReserveData, "getUserReserveData", results[callIndex].ReturnData); err != nil {
-			return nil, fmt.Errorf("failed to unpack user reserve data: %w", err)
-		}
+		userReserveData := userReserveDatas[callIndex]
 		callIndex++
 
 		token, err := s.dbWrapper.GetTokenInfo(s.chain.ChainName, asset.Hex())
@@ -222,8 +137,8 @@ func (s *Service) findBestLiquidationInfo(user string, userConfig *aavev3.DataTy
 			debt := big.NewInt(0).Add(userReserveData.CurrentStableDebt, userReserveData.CurrentVariableDebt)
 			base := amountToUSD(debt, token.Decimals.BigInt(), token.Price.BigInt())
 			if base > liquidationInfo.DebtAmountBase {
-				baseFloat := big.NewFloat(0).Mul(big.NewFloat(base), USD_DECIMALS)
-				baseInt, _ := baseFloat.Int(nil)
+				baseUSD := big.NewFloat(0).Mul(big.NewFloat(base), USD_DECIMALS)
+				baseInt, _ := baseUSD.Int(nil)
 				liquidationInfo.TotalDebtBase = models.NewBigInt(big.NewInt(0).Add(liquidationInfo.TotalDebtBase.BigInt(), baseInt))
 				liquidationInfo.DebtAmountBase = base
 				liquidationInfo.DebtAmount = (*models.BigInt)(debt)
@@ -267,12 +182,6 @@ func (s *Service) findBestLiquidationInfo(user string, userConfig *aavev3.DataTy
 	}
 
 	return &liquidationInfo, nil
-}
-
-func checkUSDEqual(old, new *big.Int) bool {
-	oldUSD := big.NewFloat(0).Quo(big.NewFloat(0).SetInt(old), USD_DECIMALS)
-	newUSD := big.NewFloat(0).Quo(big.NewFloat(0).SetInt(new), USD_DECIMALS)
-	return fmt.Sprintf("%0.2f", oldUSD) == fmt.Sprintf("%0.2f", newUSD)
 }
 
 // func (s *Service) calculateLiquidationProfit(
