@@ -55,7 +55,7 @@ func amountToUSD(amount, decimals *big.Int, price *big.Int) float64 {
 	return usdValue
 }
 
-func USDToAmount(usd float64, decimals int, price *big.Int) *big.Int {
+func USDToAmount(usd float64, decimals, price *big.Int) *big.Int {
 	if price == nil || price.Sign() == 0 {
 		return big.NewInt(0)
 	}
@@ -68,7 +68,7 @@ func USDToAmount(usd float64, decimals int, price *big.Int) *big.Int {
 	amount := new(big.Float).Quo(usdFloat, priceFloat)
 
 	// 考虑精度
-	decimalsFactor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil))
+	decimalsFactor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), decimals, nil))
 	amount.Mul(amount, decimalsFactor)
 
 	// 转换为大整数

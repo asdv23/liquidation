@@ -1,6 +1,7 @@
 package aavev3
 
 import (
+	"context"
 	"fmt"
 	"liquidation-bot/internal/models"
 	"math/big"
@@ -58,6 +59,14 @@ func (w *DBWrapper) ChainActiveLoans(chainName string) (map[string]*models.Loan,
 		activeLoansMap[loan.User] = loan
 	}
 	return activeLoansMap, nil
+}
+
+func (w *DBWrapper) GetLoan(ctx context.Context, chainName, user string) (*models.Loan, error) {
+	loan := &models.Loan{}
+	if err := w.db.Where(&models.Loan{ChainName: chainName, User: user}).First(&loan).Error; err != nil {
+		return nil, fmt.Errorf("failed to get active loan: %w", err)
+	}
+	return loan, nil
 }
 
 func (w *DBWrapper) CreateOrUpdateActiveLoan(chainName string, user string) (*models.Loan, error) {

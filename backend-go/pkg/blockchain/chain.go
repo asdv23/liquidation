@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"liquidation-bot/config"
+	"math/big"
 	"strings"
 	"sync"
 	"time"
@@ -23,14 +24,16 @@ type Chain struct {
 	Logger    *zap.Logger
 	Cfg       config.ChainConfig
 	ChainName string
+	ChainID   *big.Int
 
 	reconnectCh  chan struct{}
 	reconnectFns []ReconnectFn
 	privateKey   string
 
 	client    *ethclient.Client
-	auth      *bind.TransactOpts
+	auth      func() (*bind.TransactOpts, error)
 	contracts *Contracts
+	baseFee   *big.Int
 }
 
 func NewChain(ctx context.Context, logger *zap.Logger, chainName string, privateKey string, cfg config.ChainConfig) (*Chain, error) {
@@ -77,18 +80,22 @@ func (c *Chain) connect() error {
 	if err != nil {
 		return fmt.Errorf("failed to get chain id: %w", err)
 	}
+	c.ChainID = chainID
 	c.client = wsClient
 
 	// 创建认证
-	key, err := crypto.HexToECDSA(c.privateKey)
-	if err != nil {
-		return fmt.Errorf("failed to parse private key: %w", err)
+
+	c.auth = func() (*bind.TransactOpts, error) {
+		key, err := crypto.HexToECDSA(c.privateKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse private key: %w", err)
+		}
+		auth, err := bind.NewKeyedTransactorWithChainID(key, c.ChainID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create auth: %w", err)
+		}
+		return auth, nil
 	}
-	auth, err := bind.NewKeyedTransactorWithChainID(key, chainID)
-	if err != nil {
-		return fmt.Errorf("failed to create auth: %w", err)
-	}
-	c.auth = auth
 
 	contracts, err := NewContracts(wsClient, c.Cfg.ContractAddresses)
 	if err != nil {
@@ -127,6 +134,7 @@ func (c *Chain) subscribe() {
 			return
 		case header := <-headers:
 			c.Logger.Debug("New block", zap.Uint64("blockNumber", header.Number.Uint64()))
+			c.baseFee = header.BaseFee
 		}
 	}
 }
@@ -164,14 +172,20 @@ func (c *Chain) GetClient() *ethclient.Client {
 	return c.client
 }
 
-func (c *Chain) GetAuth() *bind.TransactOpts {
+func (c *Chain) GetAuth() (*bind.TransactOpts, error) {
 	c.RLock()
 	defer c.RUnlock()
-	return c.auth
+	return c.auth()
 }
 
 func (c *Chain) GetContracts() *Contracts {
 	c.RLock()
 	defer c.RUnlock()
 	return c.contracts
+}
+
+func (c *Chain) GetBaseFee() *big.Int {
+	c.RLock()
+	defer c.RUnlock()
+	return c.baseFee
 }
