@@ -59,7 +59,8 @@ func (s *Service) processBatch(batchUsers []string, activeLoans map[string]*mode
 
 	// 处理每个用户
 	deactivateUsers := make([]string, 0)
-	liquidationInfos := make([]*UpdateLiquidationInfo, 0)
+	updateHfUsers := make([]*UpdateLiquidationInfo, 0)
+	updateInfoUsers := make([]*UpdateLiquidationInfo, 0)
 	for _, user := range batchUsers {
 		loan := activeLoans[user]
 		accountData, ok := accountDataMap[user]
@@ -95,7 +96,7 @@ func (s *Service) processBatch(batchUsers []string, activeLoans map[string]*mode
 			zap.Any("currentLiquidationThreshold", accountData.CurrentLiquidationThreshold),
 		)
 
-		liquidationInfos = append(liquidationInfos, &UpdateLiquidationInfo{
+		info := &UpdateLiquidationInfo{
 			User:         user,
 			HealthFactor: healthFactor,
 			LiquidationInfo: &models.LiquidationInfo{
@@ -103,7 +104,13 @@ func (s *Service) processBatch(batchUsers []string, activeLoans map[string]*mode
 				TotalDebtBase:        models.NewBigInt(accountData.TotalDebtBase),
 				LiquidationThreshold: models.NewBigInt(accountData.CurrentLiquidationThreshold),
 			},
-		})
+		}
+		updateHfUsers = append(updateHfUsers, info)
+
+		// 如果 liquidationInfo 为空，或者需要重新计算，则更新 liquidationInfo
+		if loan.LiquidationInfo == nil || loan.LiquidationInfo.DebtAmount == nil || loan.LiquidationInfo.DebtAmountBase == 0 || findBestLiquidationInfos {
+			updateInfoUsers = append(updateInfoUsers, info)
+		}
 	}
 
 	if len(deactivateUsers) > 0 {
@@ -112,18 +119,17 @@ func (s *Service) processBatch(batchUsers []string, activeLoans map[string]*mode
 			return fmt.Errorf("failed to deactivate active loan: %w", err)
 		}
 	}
-	if len(liquidationInfos) > 0 {
-		s.logger.Info("update health factor users", zap.Any("users", len(liquidationInfos)))
+	if len(updateHfUsers) > 0 {
+		s.logger.Info("update health factor users", zap.Any("users", len(updateHfUsers)))
 		// 更新 health factor 到数据库
-		if err := s.dbWrapper.UpdateActiveLoanLiquidationInfos(s.chain.ChainName, liquidationInfos); err != nil {
+		if err := s.dbWrapper.UpdateActiveLoanLiquidationInfos(s.chain.ChainName, updateHfUsers); err != nil {
 			return fmt.Errorf("failed to update loan liquidation infos in database: %w", err)
 		}
-
-		// 查找最佳清算信息
-		if findBestLiquidationInfos {
-			if err := s.findBestLiquidationInfos(liquidationInfos); err != nil {
-				return fmt.Errorf("failed to find best liquidation info: %w", err)
-			}
+	}
+	if len(updateInfoUsers) > 0 {
+		s.logger.Info("find best liquidation infos", zap.Any("users", len(updateInfoUsers)))
+		if err := s.findBestLiquidationInfos(updateInfoUsers); err != nil {
+			return fmt.Errorf("failed to find best liquidation info: %w", err)
 		}
 	}
 
