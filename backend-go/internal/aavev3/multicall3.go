@@ -49,7 +49,11 @@ func (uad *UserAccountData) checkCalcHealthFactor(healthFactor float64) (float64
 		y = y.Mul(uad.TotalCollateralBase, uad.CurrentLiquidationThreshold).Mul(y, big.NewInt(1e14)).Div(y, uad.TotalDebtBase)
 		calcHealthFactor = formatHealthFactor(y)
 	}
-	return calcHealthFactor, fmt.Sprintf("%0.2f", calcHealthFactor) == fmt.Sprintf("%0.2f", healthFactor)
+	if fmt.Sprintf("%0.2f", calcHealthFactor) != fmt.Sprintf("%0.2f", healthFactor) {
+		fmt.Println("calcHealthFactor", fmt.Sprintf("%0.2f", calcHealthFactor), "healthFactor", fmt.Sprintf("%0.2f", healthFactor))
+		return calcHealthFactor, false
+	}
+	return calcHealthFactor, true
 }
 
 // uint256 currentATokenBalance,
