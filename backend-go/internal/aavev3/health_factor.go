@@ -107,8 +107,8 @@ func (s *Service) processBatch(batchUsers []string, activeLoans map[string]*mode
 		}
 		updateHfUsers = append(updateHfUsers, info)
 
-		// 如果 liquidationInfo 为空，或者需要重新计算，则更新 liquidationInfo
-		if loan.LiquidationInfo == nil || loan.LiquidationInfo.DebtAmount == nil || loan.LiquidationInfo.DebtAmountBase == 0 || findBestLiquidationInfos {
+		// 需要重新计算，则更新 liquidationInfo
+		if findBestLiquidationInfos {
 			updateInfoUsers = append(updateInfoUsers, info)
 		}
 	}

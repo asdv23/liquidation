@@ -49,7 +49,7 @@ func NewClient(logger *zap.Logger, chainConfigs map[string]config.ChainConfig, p
 func (c *Client) newChain(chainName string, chainConfig config.ChainConfig) error {
 	chain, err := NewChain(c.ctx, c.logger, chainName, c.privateKey, chainConfig)
 	if err != nil {
-		return fmt.Errorf("failed to create chain: %w", err)
+		return fmt.Errorf("failed to create chain: %w, chainName: %s", err, chainName)
 	}
 
 	c.Lock()

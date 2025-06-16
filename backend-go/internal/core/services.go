@@ -5,7 +5,9 @@ import (
 	"liquidation-bot/internal/aavev3"
 	"liquidation-bot/pkg/blockchain"
 	"os"
+	"time"
 
+	"github.com/avast/retry-go/v4"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -19,8 +21,16 @@ type Services struct {
 }
 
 func NewServices(db *gorm.DB, cfg *config.Config, logger *zap.Logger) *Services {
-	chainClient, err := blockchain.NewClient(logger, cfg.Chains, cfg.PrivateKey)
-	if err != nil {
+	var chainClient *blockchain.Client
+	if err := retry.Do(func() error {
+		client, err := blockchain.NewClient(logger, cfg.Chains, cfg.PrivateKey)
+		if err != nil {
+			logger.Error("failed to create chain client", zap.Error(err))
+			return err
+		}
+		chainClient = client
+		return nil
+	}, retry.MaxDelay(60*time.Second), retry.Delay(1*time.Second), retry.DelayType(retry.BackOffDelay)); err != nil {
 		logger.Error("failed to create chain client", zap.Error(err))
 		os.Exit(1)
 	}

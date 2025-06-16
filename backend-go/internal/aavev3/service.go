@@ -123,6 +123,25 @@ func (s *Service) startCheckAllActiveLoans(ctx context.Context) error {
 
 func (s *Service) startLiquidation(ctx context.Context) error {
 	go func() {
+		nullLoans, err := s.dbWrapper.GetNullLiquidationLoans(ctx, s.chain.ChainName)
+		if err != nil {
+			s.logger.Error("failed to get null liquidation loans", zap.Error(err))
+			return
+		}
+		updateInfos := make([]*UpdateLiquidationInfo, 0)
+		for _, loan := range nullLoans {
+			updateInfos = append(updateInfos, &UpdateLiquidationInfo{
+				User:         loan.User,
+				HealthFactor: loan.HealthFactor,
+			})
+		}
+		s.logger.Info("found null liquidation loans", zap.Int("count", len(updateInfos)))
+		if err := s.findBestLiquidationInfos(updateInfos); err != nil {
+			s.logger.Error("failed to find best liquidation infos", zap.Error(err))
+			return
+		}
+	}()
+	go func() {
 		loans, err := s.dbWrapper.GetLiquidationLoans(ctx, s.chain.ChainName)
 		if err != nil {
 			s.logger.Error("failed to get liquidation infos", zap.Error(err))

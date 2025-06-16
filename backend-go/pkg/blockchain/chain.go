@@ -84,8 +84,8 @@ func (c *Chain) connect() error {
 	if err != nil {
 		return fmt.Errorf("failed to get header: %w", err)
 	}
-	c.ChainID = chainID
 	c.client = wsClient
+	c.ChainID = chainID
 	c.baseFee = header.BaseFee
 
 	// 创建认证
