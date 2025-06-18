@@ -22,6 +22,14 @@ func (b *BigInt) BigInt() *big.Int {
 	return (*big.Int)(b)
 }
 
+// b = b + other
+func (b *BigInt) Add(other *BigInt) *BigInt {
+	if b == nil || other == nil {
+		return NewBigInt(big.NewInt(0))
+	}
+	return NewBigInt(b.BigInt().Add(b.BigInt(), other.BigInt()))
+}
+
 // Value 实现了 driver.Valuer 接口
 func (b *BigInt) Value() (driver.Value, error) {
 	if b == nil {
@@ -68,10 +76,10 @@ type LiquidationInfo struct {
 	LiquidationThreshold *BigInt
 	CollateralAsset      string
 	CollateralAmount     *BigInt
-	CollateralAmountBase float64
+	CollateralAmountBase *BigInt
 	DebtAsset            string
 	DebtAmount           *BigInt
-	DebtAmountBase       float64
+	DebtAmountBase       *BigInt
 }
 
 func (old *LiquidationInfo) Cmp(new *LiquidationInfo) bool {

@@ -13,7 +13,6 @@ type Reserve struct {
 	User                string `gorm:"uniqueIndex:idx_chain_reserve,priority:2"`
 	Reserve             string `gorm:"uniqueIndex:idx_chain_reserve,priority:3"`
 	Amount              *BigInt
-	AmountBase          float64
 	IsBorrowing         bool
 	IsUsingAsCollateral bool
 	CreatedAt           time.Time

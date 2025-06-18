@@ -62,22 +62,24 @@ func NewService(
 // Initialize 初始化服务
 func (s *Service) Initialize() {
 	err := retry.Do(func() error {
+		// 1. 更新 ReserveList 和价格
 		if err := s.updateReservesListAndPrice(); err != nil {
 			return fmt.Errorf("failed to update reserves list and price: %w", err)
 		}
 
+		// 2. 启动后台任务
 		eg, ctx := errgroup.WithContext(s.chain.Ctx)
 		// 1. 启动事件处理
 		eg.Go(func() error {
 			return s.handleEvents(ctx)
 		})
-		// 2. 启动价格流
+		// 2. 启动价格同步
 		eg.Go(func() error {
-			return s.startPriceStream(ctx)
+			return s.startSyncPricesForReserveList(ctx)
 		})
-		// 3.启动健康因子检查
+		// 3.启动健康因子同步
 		eg.Go(func() error {
-			return s.startCheckAllActiveLoans(ctx)
+			return s.startSyncHealthFactorForAllActiveLoans(ctx)
 		})
 		// 4. 启动清算检查
 		eg.Go(func() error {
@@ -94,13 +96,13 @@ func (s *Service) Initialize() {
 	}
 }
 
-// startHealthFactorChecker 启动健康因子检查
-func (s *Service) startCheckAllActiveLoans(ctx context.Context) error {
+// startSyncHealthFactorForAllActiveLoans 启动健康因子同步
+func (s *Service) startSyncHealthFactorForAllActiveLoans(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(5 * time.Minute):
+		case <-time.After(1 * time.Hour):
 			activeLoans, err := s.dbWrapper.ChainActiveLoans(s.chain.ChainName)
 			if err != nil {
 				s.logger.Error("failed to get active loans", zap.Error(err))
@@ -112,9 +114,9 @@ func (s *Service) startCheckAllActiveLoans(ctx context.Context) error {
 				continue
 			}
 
-			s.logger.Info("checking health factor for all active loans", zap.Int("count", len(activeLoans)))
-			if err := s.checkHealthFactor(activeLoans); err != nil {
-				s.logger.Error("failed to check health factor", zap.Error(err))
+			s.logger.Info("sync health factor for all active loans", zap.Int("count", len(activeLoans)))
+			if err := s.syncHealthFactorForLoans(activeLoans); err != nil {
+				s.logger.Error("failed to sync health factor", zap.Error(err))
 				continue
 			}
 		}

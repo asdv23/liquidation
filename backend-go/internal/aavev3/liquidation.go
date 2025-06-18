@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	aavev3 "liquidation-bot/bindings/aavev3"
 	"liquidation-bot/internal/models"
 	"liquidation-bot/pkg/blockchain"
 	"math/big"
@@ -35,29 +34,31 @@ func (s *Service) executeLiquidation(ctx context.Context, loan *models.Loan) err
 			return fmt.Errorf("failed to find best liquidation info: %w", err)
 		}
 	}
-	debtTokenInfo, err := s.dbWrapper.GetTokenInfo(s.chain.ChainName, loan.LiquidationInfo.DebtAsset)
-	if err != nil {
-		return fmt.Errorf("failed to get debt token info: %w", err)
-	}
 
 	// 全量清算 or 部分清算
 	debtToCover := uint256.MustFromHex("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
-	debtToCoverUSD := loan.LiquidationInfo.DebtAmountBase
-	if loan.LiquidationInfo.CollateralAmountBase < loan.LiquidationInfo.DebtAmountBase {
-		// 部分清算
-		debtToCoverUSD = loan.LiquidationInfo.CollateralAmountBase * (float64(999) / 1000)
-		debtToCover = uint256.MustFromBig(USDToAmount(debtToCoverUSD, debtTokenInfo.Decimals.BigInt(), debtTokenInfo.Price.BigInt()))
-	}
+	// debtToCoverUSD := loan.LiquidationInfo.DebtAmountBase.BigInt()
+	// if loan.LiquidationInfo.CollateralAmountBase.BigInt().Cmp(loan.LiquidationInfo.DebtAmountBase.BigInt()) < 0 {
+	// 部分清算
+	// debtTokenInfo, err := s.dbWrapper.GetTokenInfo(s.chain.ChainName, loan.LiquidationInfo.DebtAsset)
+	// if err != nil {
+	// 	return fmt.Errorf("failed to get debt token info: %w", err)
+	// }
+	// part := big.NewInt(0).Mul(loan.LiquidationInfo.CollateralAmountBase.BigInt(), big.NewInt(999))
+	// debtToCoverUSD = part.Div(part, big.NewInt(1000))
+	// debtToCover = uint256.MustFromBig(USDToAmount(debtToCoverUSD.Float64(), debtTokenInfo.Decimals.BigInt(), debtTokenInfo.Price.BigInt()))
+	// }
 
 	s.logger.Info("💰 Executing flash loan liquidation with aggregator:", zap.String("user", loan.User), zap.Float64("healthFactor", loan.HealthFactor),
 		zap.String("collateralAsset", loan.LiquidationInfo.CollateralAsset),
 		zap.String("debtAsset", loan.LiquidationInfo.DebtAsset),
 		zap.String("debtToCover", debtToCover.String()),
-		zap.String("debtToCoverUSD", fmt.Sprintf("%f", debtToCoverUSD)),
+		// zap.String("debtToCoverUSD", fmt.Sprintf("%f", debtToCoverUSD)),
 	)
 
+	// TODO: Retry replace for select-case
 	go s.liquidateWithUniswapV3(ctx, loan, debtToCover)
-	go s.liquidateWithOdos(ctx, loan, debtToCover, debtToCoverUSD)
+	// go s.liquidateWithOdos(ctx, loan, debtToCover, debtToCoverUSD)
 
 	return nil
 }
@@ -326,171 +327,3 @@ func encodeData(usdc, to, data string) ([]byte, error) {
 
 	return encoded, nil
 }
-
-func (s *Service) findBestLiquidationInfos(liquidationInfos []*UpdateLiquidationInfo) error {
-	users := make([]string, 0)
-	for _, liquidationInfo := range liquidationInfos {
-		users = append(users, liquidationInfo.User)
-	}
-
-	// TODO - 价格变化时，user config 不会变化
-	userConfigs, err := s.getUserConfigurationForBatch(users)
-	if err != nil {
-		return fmt.Errorf("failed to get user configurations: %w", err)
-	}
-	if len(userConfigs) != len(liquidationInfos) {
-		return fmt.Errorf("user configs length mismatch")
-	}
-
-	for i, userConfig := range userConfigs {
-		info := liquidationInfos[i]
-		liquidationInfo, err := s.findBestLiquidationInfo(info.User, userConfig) // 最好是链下计算
-		if err != nil {
-			return fmt.Errorf("failed to find best liquidation info: %w", err)
-		}
-		// userReserves不是和 total 同时查询，当存在数量和价格变化时，userReserves 和 total 就会不一致
-		// if !checkUSDEqual(info.LiquidationInfo.TotalCollateralBase.BigInt(), liquidationInfo.TotalCollateralBase.BigInt()) {
-		// 	s.logger.Info("calculate collateral base is not equal ❌❌", zap.String("user", info.User), zap.Any("info collateral base", info.LiquidationInfo.TotalCollateralBase.BigInt()), zap.Any("liquidationInfo collateral base", liquidationInfo.TotalCollateralBase.BigInt()))
-		// }
-		// if !checkUSDEqual(info.LiquidationInfo.TotalDebtBase.BigInt(), liquidationInfo.TotalDebtBase.BigInt()) {
-		// 	s.logger.Info("calculate debt base is not equal ❌❌❌", zap.String("user", info.User), zap.Any("info debt base", info.LiquidationInfo.TotalDebtBase.BigInt()), zap.Any("liquidationInfo debt base", liquidationInfo.TotalDebtBase.BigInt()))
-		// }
-		liquidationInfo.TotalCollateralBase = models.NewBigInt(info.LiquidationInfo.TotalCollateralBase.BigInt())
-		liquidationInfo.TotalDebtBase = models.NewBigInt(info.LiquidationInfo.TotalDebtBase.BigInt())
-		liquidationInfo.LiquidationThreshold = models.NewBigInt(info.LiquidationInfo.LiquidationThreshold.BigInt())
-		info.LiquidationInfo = liquidationInfo
-
-		if info.HealthFactor < 1 {
-			s.logger.Info("health factor below liquidation threshold 🌟🌟🌟🌟🌟🌟", zap.String("user", info.User), zap.Any("healthFactor", info.HealthFactor))
-			s.toBeLiquidatedChan <- info.User
-		}
-	}
-
-	return nil
-}
-
-func (s *Service) findBestLiquidationInfo(user string, userConfig *aavev3.DataTypesUserConfigurationMap) (*models.LiquidationInfo, error) {
-	userReserveDatas, err := s.getUserReserveDataBatch(user, userConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get user reserve data: %w", err)
-	}
-
-	liquidationInfo := models.LiquidationInfo{
-		TotalCollateralBase:  models.NewBigInt(big.NewInt(0)),
-		TotalDebtBase:        models.NewBigInt(big.NewInt(0)),
-		LiquidationThreshold: models.NewBigInt(big.NewInt(0)),
-		CollateralAmount:     models.NewBigInt(big.NewInt(0)),
-		DebtAmount:           models.NewBigInt(big.NewInt(0)),
-		CollateralAsset:      (common.Address{}).Hex(),
-		DebtAsset:            (common.Address{}).Hex(),
-	}
-	userReserves := make([]*models.Reserve, 0)
-	callIndex := 0
-	for i, asset := range s.reservesList {
-		if !isUsingAsCollateralOrBorrowing(userConfig, i) {
-			continue
-		}
-
-		userReserveData := userReserveDatas[callIndex]
-		callIndex++
-
-		token, err := s.dbWrapper.GetTokenInfo(s.chain.ChainName, asset.Hex())
-		if err != nil {
-			return nil, fmt.Errorf("failed to get token info: %w", err)
-		}
-		if isBorrowing(userConfig, i) {
-			debt := big.NewInt(0).Add(userReserveData.CurrentStableDebt, userReserveData.CurrentVariableDebt)
-			base := amountToUSD(debt, token.Decimals.BigInt(), token.Price.BigInt())
-			if base > liquidationInfo.DebtAmountBase {
-				baseUSD := big.NewFloat(0).Mul(big.NewFloat(base), USD_DECIMALS)
-				baseInt, _ := baseUSD.Int(nil)
-				liquidationInfo.TotalDebtBase = models.NewBigInt(big.NewInt(0).Add(liquidationInfo.TotalDebtBase.BigInt(), baseInt))
-				liquidationInfo.DebtAmountBase = base
-				liquidationInfo.DebtAmount = (*models.BigInt)(debt)
-				liquidationInfo.DebtAsset = asset.Hex()
-			}
-			userReserves = append(userReserves, &models.Reserve{
-				ChainName:           s.chain.ChainName,
-				User:                user,
-				Reserve:             asset.Hex(),
-				Amount:              (*models.BigInt)(debt),
-				AmountBase:          base,
-				IsBorrowing:         true,
-				IsUsingAsCollateral: false,
-			})
-		}
-
-		if isUsingAsCollateral(userConfig, i) {
-			collateral := big.NewInt(0).Set(userReserveData.CurrentATokenBalance)
-			base := amountToUSD(collateral, token.Decimals.BigInt(), token.Price.BigInt())
-			if base > liquidationInfo.CollateralAmountBase {
-				baseFloat := big.NewFloat(0).Mul(big.NewFloat(base), USD_DECIMALS)
-				baseInt, _ := baseFloat.Int(nil)
-				liquidationInfo.TotalCollateralBase = models.NewBigInt(big.NewInt(0).Add(liquidationInfo.TotalCollateralBase.BigInt(), baseInt))
-				liquidationInfo.CollateralAmountBase = base
-				liquidationInfo.CollateralAmount = (*models.BigInt)(collateral)
-				liquidationInfo.CollateralAsset = asset.Hex()
-			}
-			userReserves = append(userReserves, &models.Reserve{
-				ChainName:           s.chain.ChainName,
-				User:                user,
-				Reserve:             asset.Hex(),
-				Amount:              (*models.BigInt)(collateral),
-				AmountBase:          base,
-				IsBorrowing:         false,
-				IsUsingAsCollateral: true,
-			})
-		}
-	}
-	if err := s.dbWrapper.AddUserReserves(s.chain.ChainName, user, userReserves); err != nil {
-		return nil, fmt.Errorf("failed to add user reserves: %w", err)
-	}
-
-	return &liquidationInfo, nil
-}
-
-// func (s *Service) calculateLiquidationProfit(
-// 	info *LiquidationInfo,
-// 	collateral string,
-// 	debt string,
-// ) (*big.Int, error) {
-// 	// 获取清算参数
-// 	params, err := s.getLiquidationParams(info, collateral, debt)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("failed to get liquidation params: %w", err)
-// 	}
-
-// 	// 计算清算收益
-// 	profit := new(big.Int).Sub(
-// 		params.CollateralAmount,
-// 		params.DebtAmount,
-// 	)
-
-// 	return profit, nil
-// }
-
-// func (s *Service) getLiquidationParams(info *LiquidationInfo, collateral string, debt string) (*LiquidationParams, error) {
-// 	return nil, nil
-// }
-
-// func (s *Service) executeLiquidationTx(pair *LiquidationPair) (*types.Transaction, error) {
-// 	// 准备交易参数
-// 	auth, err := s.chainClient.GetAuth(s.chainName)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("failed to get auth: %w", err)
-// 	}
-
-// 	// 执行清算
-// 	tx, err := s.contracts.FlashLoanLiquidation.ExecuteLiquidation(auth,
-// 		common.HexToAddress(pair.CollateralAsset),
-// 		common.HexToAddress(pair.DebtAsset),
-// 		common.HexToAddress(pair.User),
-// 		big.NewInt(-1),
-// 		[]byte{}, // data
-// 	)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("failed to execute liquidation: %w", err)
-// 	}
-
-// 	return tx, nil
-// }

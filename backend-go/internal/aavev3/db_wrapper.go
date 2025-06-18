@@ -43,7 +43,7 @@ func (w *DBWrapper) GetTokenInfo(chainName string, address string) (*models.Toke
 	return token, nil
 }
 
-func (w *DBWrapper) AddTokenInfo(chainName string, address string, symbol string, decimals, price *big.Int) (*models.Token, error) {
+func (w *DBWrapper) UpsertTokenInfo(chainName string, address string, symbol string, decimals, price *big.Int) (*models.Token, error) {
 	token := &models.Token{
 		ChainName: chainName,
 		Address:   address,
@@ -188,6 +188,25 @@ func (w *DBWrapper) GetUserReserves(chainName string, user string) ([]*models.Re
 		return nil, fmt.Errorf("failed to get user reserves: %w", err)
 	}
 	return reserves, nil
+}
+
+// select * from reserves where chain_name = ? and user in(select user from reserves where chain_name = ? and reserve in (?))
+func (w *DBWrapper) GetUserReservesByReserves(chainName string, reserves []string) ([]*models.Reserve, error) {
+	var userReserves []*models.Reserve
+
+	subQuery := w.db.Model(&models.Reserve{}).
+		Select("user").
+		Where("chain_name = ? AND reserve IN (?)", chainName, reserves)
+
+	err := w.db.Model(&models.Reserve{}).
+		Where("chain_name = ? AND user IN (?)", chainName, subQuery).
+		Find(&userReserves).Error
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user reserves by reserves: %w", err)
+	}
+
+	return userReserves, nil
 }
 
 func (w *DBWrapper) GetLiquidationInfo(chainName string, user string) (*models.LiquidationInfo, error) {

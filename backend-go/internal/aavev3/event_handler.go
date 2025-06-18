@@ -151,9 +151,9 @@ func (s *Service) updateLoan(user string) error {
 		return fmt.Errorf("failed to create or update loan: %w", err)
 	}
 
-	// check health factor
-	if err := s.checkHealthFactorForUser(user, loan); err != nil {
-		s.logger.Error("failed to check health factor", zap.Error(err), zap.String("user", user))
+	// sync health factor
+	if err := s.syncHealthFactorForUser(user, loan); err != nil {
+		s.logger.Error("failed to sync health factor for user", zap.Error(err), zap.String("user", user))
 	}
 
 	return nil
