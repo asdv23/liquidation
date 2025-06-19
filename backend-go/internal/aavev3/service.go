@@ -67,7 +67,18 @@ func (s *Service) Initialize() {
 			return fmt.Errorf("failed to update reserves list and price: %w", err)
 		}
 
-		// 2. 启动后台任务
+		// 2. 处理没有清算信息的贷款
+		noLiquidationInfoLoans, err := s.dbWrapper.GetNoLiquidationInfoLoans(s.chain.Ctx, s.chain.ChainName)
+		if err != nil {
+			return fmt.Errorf("failed to get loans with no liquidation information: %w", err)
+		}
+
+		s.logger.Info("found loans with no liquidation information", zap.Int("count", len(noLiquidationInfoLoans)))
+		if err := s.syncHealthFactorForLoans(noLiquidationInfoLoans); err != nil {
+			return fmt.Errorf("failed to sync health factor for loans: %w", err)
+		}
+
+		// 3. 启动后台任务
 		eg, ctx := errgroup.WithContext(s.chain.Ctx)
 		// 1. 启动事件处理
 		eg.Go(func() error {
@@ -125,25 +136,7 @@ func (s *Service) startSyncHealthFactorForAllActiveLoans(ctx context.Context) er
 
 func (s *Service) startLiquidation(ctx context.Context) error {
 	go func() {
-		nullLoans, err := s.dbWrapper.GetNullLiquidationLoans(ctx, s.chain.ChainName)
-		if err != nil {
-			s.logger.Error("failed to get null liquidation loans", zap.Error(err))
-			return
-		}
-		updateInfos := make([]*UpdateLiquidationInfo, 0)
-		for _, loan := range nullLoans {
-			updateInfos = append(updateInfos, &UpdateLiquidationInfo{
-				User:         loan.User,
-				HealthFactor: loan.HealthFactor,
-			})
-		}
-		s.logger.Info("found null liquidation loans", zap.Int("count", len(updateInfos)))
-		if err := s.findBestLiquidationInfos(updateInfos); err != nil {
-			s.logger.Error("failed to find best liquidation infos", zap.Error(err))
-			return
-		}
-	}()
-	go func() {
+		// check if there are any liquidation loans
 		loans, err := s.dbWrapper.GetLiquidationLoans(ctx, s.chain.ChainName)
 		if err != nil {
 			s.logger.Error("failed to get liquidation infos", zap.Error(err))

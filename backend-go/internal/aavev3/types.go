@@ -115,7 +115,9 @@ type QuotePayload struct {
 }
 
 type QuoteResponse struct {
-	PathID string `json:"pathId"`
+	PathID  string `json:"pathId"`
+	Detail  string `json:"detail"`
+	ErrCode int    `json:"errorCode"`
 }
 
 type AssemblePayload struct {

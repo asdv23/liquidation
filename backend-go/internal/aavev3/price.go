@@ -53,13 +53,14 @@ func (s *Service) updateReservesListAndPrice() error {
 // 4. 如果健康因子低于阈值，则进行清算
 func (s *Service) startSyncPricesForReserveList(ctx context.Context) error {
 	for {
+		if err := s.syncPricesForReserveList(ctx); err != nil {
+			s.logger.Error("failed to sync prices for reserve list", zap.Error(err))
+		}
+
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("context done: %w", ctx.Err())
 		case <-time.After(time.Second):
-			if err := s.syncPricesForReserveList(ctx); err != nil {
-				s.logger.Error("failed to sync prices for reserve list", zap.Error(err))
-			}
 		}
 	}
 }
@@ -116,14 +117,19 @@ func (s *Service) syncPricesForReserveList(ctx context.Context) error {
 		tokenInfo := tokenInfoMap[userReserve.Reserve]
 		amountBase := amountToBase(userReserve.Amount.BigInt(), tokenInfo.Decimals.BigInt(), tokenInfo.Price.BigInt())
 		amountBaseBigInt := models.NewBigInt(amountBase)
-		liquidationInfo, ok := userLiquidationInfoMap[userReserve.User]
-		if !ok {
+		if _, ok := userLiquidationInfoMap[userReserve.User]; !ok {
+			defaultBigInt := models.NewBigInt(big.NewInt(0))
 			if userReserve.IsBorrowing {
 				userLiquidationInfoMap[userReserve.User] = &models.LiquidationInfo{
-					TotalDebtBase:  amountBaseBigInt,
-					DebtAsset:      userReserve.Reserve,
-					DebtAmount:     userReserve.Amount,
-					DebtAmountBase: amountBaseBigInt,
+					TotalDebtBase:        amountBaseBigInt,
+					DebtAsset:            userReserve.Reserve,
+					DebtAmount:           userReserve.Amount,
+					DebtAmountBase:       amountBaseBigInt,
+					TotalCollateralBase:  defaultBigInt,
+					CollateralAsset:      "",
+					CollateralAmount:     defaultBigInt,
+					CollateralAmountBase: defaultBigInt,
+					LiquidationThreshold: defaultBigInt,
 				}
 			}
 			if userReserve.IsUsingAsCollateral {
@@ -132,15 +138,21 @@ func (s *Service) syncPricesForReserveList(ctx context.Context) error {
 					CollateralAsset:      userReserve.Reserve,
 					CollateralAmount:     userReserve.Amount,
 					CollateralAmountBase: amountBaseBigInt,
+					TotalDebtBase:        defaultBigInt,
+					DebtAsset:            "",
+					DebtAmount:           defaultBigInt,
+					DebtAmountBase:       defaultBigInt,
+					LiquidationThreshold: defaultBigInt,
 				}
 			}
 			continue
 		}
+		liquidationInfo := userLiquidationInfoMap[userReserve.User]
 
 		// update total debt and max debt amount
 		if userReserve.IsBorrowing {
 			liquidationInfo.TotalDebtBase = liquidationInfo.TotalDebtBase.Add(amountBaseBigInt)
-			if liquidationInfo.DebtAmountBase.BigInt().Cmp(amountBaseBigInt.BigInt()) < 0 {
+			if liquidationInfo.DebtAsset == "" || amountBaseBigInt.BigInt().Cmp(liquidationInfo.DebtAmountBase.BigInt()) > 0 {
 				liquidationInfo.DebtAsset = userReserve.Reserve
 				liquidationInfo.DebtAmount = userReserve.Amount
 				liquidationInfo.DebtAmountBase = amountBaseBigInt
@@ -150,7 +162,7 @@ func (s *Service) syncPricesForReserveList(ctx context.Context) error {
 		// update total collateral and max collateral amount
 		if userReserve.IsUsingAsCollateral {
 			liquidationInfo.TotalCollateralBase = liquidationInfo.TotalCollateralBase.Add(amountBaseBigInt)
-			if liquidationInfo.CollateralAmountBase.BigInt().Cmp(amountBaseBigInt.BigInt()) < 0 {
+			if liquidationInfo.CollateralAsset == "" || amountBaseBigInt.BigInt().Cmp(liquidationInfo.CollateralAmountBase.BigInt()) > 0 {
 				liquidationInfo.CollateralAsset = userReserve.Reserve
 				liquidationInfo.CollateralAmount = userReserve.Amount
 				liquidationInfo.CollateralAmountBase = amountBaseBigInt
@@ -160,8 +172,13 @@ func (s *Service) syncPricesForReserveList(ctx context.Context) error {
 
 	// calc user health factor(need LiquidationThreshold)
 	var wg sync.WaitGroup
-	wg.Add(len(userLiquidationInfoMap))
 	for user, liquidationInfo := range userLiquidationInfoMap {
+		if liquidationInfo.DebtAsset == "" || liquidationInfo.CollateralAsset == "" {
+			s.logger.Error("debt or collateral is empty, user: %s", zap.String("user", user), zap.String("liquidationInfo", liquidationInfo.String()))
+			continue
+		}
+
+		wg.Add(1)
 		go func(user string, liquidationInfo *models.LiquidationInfo) {
 			defer wg.Done()
 			if err := s.calcUserHealthFactor(ctx, user, liquidationInfo); err != nil {
@@ -174,10 +191,11 @@ func (s *Service) syncPricesForReserveList(ctx context.Context) error {
 }
 
 func (s *Service) calcUserHealthFactor(ctx context.Context, user string, liquidationInfo *models.LiquidationInfo) error {
-	loan, err := s.dbWrapper.GetLoan(ctx, s.chain.ChainName, user)
+	loan, err := s.dbWrapper.GetActiveLoan(ctx, s.chain.ChainName, user)
 	if err != nil {
 		return fmt.Errorf("failed to get loan: %w", err)
 	}
+	liquidationInfo.LiquidationThreshold = loan.LiquidationInfo.LiquidationThreshold
 	loan.LiquidationInfo = liquidationInfo
 
 	y := new(big.Int)

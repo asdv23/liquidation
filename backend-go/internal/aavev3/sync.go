@@ -11,7 +11,7 @@ import (
 )
 
 func (s *Service) syncHealthFactorForUser(user string, loan *models.Loan) error {
-	return s.processBatch([]string{user}, map[string]*models.Loan{user: loan}, true)
+	return s.processBatch([]string{user}, map[string]*models.Loan{user: loan})
 }
 
 const (
@@ -41,14 +41,14 @@ func (s *Service) syncHealthFactorForLoans(loans []*models.Loan) error {
 		s.logger.Info("processing batch", zap.Int("i", i), zap.Int("total", len(usersToCheck)), zap.Int("batchSize", batchSize))
 
 		batch := usersToCheck[i:end]
-		if err := s.processBatch(batch, loansMap, false); err != nil {
+		if err := s.processBatch(batch, loansMap); err != nil {
 			return fmt.Errorf("failed to process batch: %w", err)
 		}
 	}
 	return nil
 }
 
-func (s *Service) processBatch(batchUsers []string, activeLoans map[string]*models.Loan, findBestLiquidationInfos bool) error {
+func (s *Service) processBatch(batchUsers []string, activeLoans map[string]*models.Loan) error {
 	// 获取用户账户数据
 	accountDataMap, err := s.getUserAccountDataBatch(batchUsers)
 	if err != nil {
@@ -57,7 +57,6 @@ func (s *Service) processBatch(batchUsers []string, activeLoans map[string]*mode
 
 	// 处理每个用户
 	deactivateUsers := make([]string, 0)
-	updateHfUsers := make([]*UpdateLiquidationInfo, 0)
 	updateInfoUsers := make([]*UpdateLiquidationInfo, 0)
 	for _, user := range batchUsers {
 		loan := activeLoans[user]
@@ -85,6 +84,7 @@ func (s *Service) processBatch(batchUsers []string, activeLoans map[string]*mode
 
 		// 检查并更新贷款信息
 		if lastHealthFactor := loan.HealthFactor; lastHealthFactor == healthFactor {
+			s.logger.Info("health factor not changed, skip update liquidation info", zap.String("user", user), zap.Float64("healthFactor", healthFactor))
 			continue
 		}
 		s.logger.Info("health factor changed", zap.String("user", user),
@@ -103,12 +103,8 @@ func (s *Service) processBatch(batchUsers []string, activeLoans map[string]*mode
 				LiquidationThreshold: models.NewBigInt(accountData.CurrentLiquidationThreshold),
 			},
 		}
-		updateHfUsers = append(updateHfUsers, info)
 
-		// 需要重新计算，则更新 liquidationInfo
-		if findBestLiquidationInfos {
-			updateInfoUsers = append(updateInfoUsers, info)
-		}
+		updateInfoUsers = append(updateInfoUsers, info)
 	}
 
 	if len(deactivateUsers) > 0 {
@@ -117,17 +113,24 @@ func (s *Service) processBatch(batchUsers []string, activeLoans map[string]*mode
 			return fmt.Errorf("failed to deactivate active loan: %w", err)
 		}
 	}
-	if len(updateHfUsers) > 0 {
-		s.logger.Info("update health factor users", zap.Any("users", len(updateHfUsers)))
-		// 更新 health factor 到数据库
-		if err := s.dbWrapper.UpdateActiveLoanLiquidationInfos(s.chain.ChainName, updateHfUsers); err != nil {
-			return fmt.Errorf("failed to update loan liquidation infos in database: %w", err)
-		}
-	}
 	if len(updateInfoUsers) > 0 {
-		s.logger.Info("find best liquidation infos", zap.Any("users", len(updateInfoUsers)))
+		s.logger.Info("finding best liquidation infos", zap.Any("users", len(updateInfoUsers)))
 		if err := s.findBestLiquidationInfos(updateInfoUsers); err != nil {
 			return fmt.Errorf("failed to find best liquidation info: %w", err)
+		}
+
+		// 更新 liquidation info 到数据库
+		s.logger.Info("updating loan liquidation infos in database", zap.Any("users", len(updateInfoUsers)))
+		if err := s.dbWrapper.UpdateActiveLoanLiquidationInfos(s.chain.ChainName, updateInfoUsers); err != nil {
+			return fmt.Errorf("failed to update loan liquidation infos in database: %w", err)
+		}
+
+		// 如果健康因子小于 1，则加入到待清算队列
+		for _, info := range updateInfoUsers {
+			if info.HealthFactor < 1 {
+				s.logger.Info("health factor below liquidation threshold 🌟🌟🌟🌟🌟🌟", zap.String("user", info.User), zap.Any("healthFactor", info.HealthFactor))
+				s.toBeLiquidatedChan <- info.User
+			}
 		}
 	}
 
@@ -162,15 +165,10 @@ func (s *Service) findBestLiquidationInfos(liquidationInfos []*UpdateLiquidation
 		// if !checkUSDEqual(info.LiquidationInfo.TotalDebtBase.BigInt(), liquidationInfo.TotalDebtBase.BigInt()) {
 		// 	s.logger.Info("calculate debt base is not equal ❌❌❌", zap.String("user", info.User), zap.Any("info debt base", info.LiquidationInfo.TotalDebtBase.BigInt()), zap.Any("liquidationInfo debt base", liquidationInfo.TotalDebtBase.BigInt()))
 		// }
-		liquidationInfo.TotalCollateralBase = models.NewBigInt(info.LiquidationInfo.TotalCollateralBase.BigInt())
-		liquidationInfo.TotalDebtBase = models.NewBigInt(info.LiquidationInfo.TotalDebtBase.BigInt())
-		liquidationInfo.LiquidationThreshold = models.NewBigInt(info.LiquidationInfo.LiquidationThreshold.BigInt())
+		liquidationInfo.TotalCollateralBase = info.LiquidationInfo.TotalCollateralBase
+		liquidationInfo.TotalDebtBase = info.LiquidationInfo.TotalDebtBase
+		liquidationInfo.LiquidationThreshold = info.LiquidationInfo.LiquidationThreshold
 		info.LiquidationInfo = liquidationInfo
-
-		if info.HealthFactor < 1 {
-			s.logger.Info("health factor below liquidation threshold 🌟🌟🌟🌟🌟🌟", zap.String("user", info.User), zap.Any("healthFactor", info.HealthFactor))
-			s.toBeLiquidatedChan <- info.User
-		}
 	}
 
 	return nil
@@ -186,10 +184,12 @@ func (s *Service) findBestLiquidationInfo(user string, userConfig *aavev3.DataTy
 		TotalCollateralBase:  models.NewBigInt(big.NewInt(0)),
 		TotalDebtBase:        models.NewBigInt(big.NewInt(0)),
 		LiquidationThreshold: models.NewBigInt(big.NewInt(0)),
-		CollateralAmount:     models.NewBigInt(big.NewInt(0)),
-		DebtAmount:           models.NewBigInt(big.NewInt(0)),
 		CollateralAsset:      (common.Address{}).Hex(),
+		CollateralAmount:     models.NewBigInt(big.NewInt(0)),
+		CollateralAmountBase: models.NewBigInt(big.NewInt(0)),
 		DebtAsset:            (common.Address{}).Hex(),
+		DebtAmount:           models.NewBigInt(big.NewInt(0)),
+		DebtAmountBase:       models.NewBigInt(big.NewInt(0)),
 	}
 	userReserves := make([]*models.Reserve, 0)
 	callIndex := 0
@@ -219,10 +219,11 @@ func (s *Service) findBestLiquidationInfo(user string, userConfig *aavev3.DataTy
 				ChainName:           s.chain.ChainName,
 				User:                user,
 				Reserve:             asset.Hex(),
-				Amount:              (*models.BigInt)(debt),
+				Amount:              models.NewBigInt(debt),
 				IsBorrowing:         true,
 				IsUsingAsCollateral: false,
 			})
+			s.logger.Info("borrowing", zap.String("user", user), zap.Any("reserve", asset.Hex()), zap.Any("amount", debt), zap.Any("base", base))
 		}
 
 		if isUsingAsCollateral(userConfig, i) {
@@ -239,15 +240,21 @@ func (s *Service) findBestLiquidationInfo(user string, userConfig *aavev3.DataTy
 				ChainName:           s.chain.ChainName,
 				User:                user,
 				Reserve:             asset.Hex(),
-				Amount:              (*models.BigInt)(collateral),
+				Amount:              models.NewBigInt(collateral),
 				IsBorrowing:         false,
 				IsUsingAsCollateral: true,
 			})
+			s.logger.Info("collateral", zap.String("user", user), zap.Any("reserve", asset.Hex()), zap.Any("amount", collateral), zap.Any("base", base))
 		}
 	}
+	if liquidationInfo.DebtAmount.BigInt().Cmp(big.NewInt(0)) == 0 || liquidationInfo.CollateralAmount.BigInt().Cmp(big.NewInt(0)) == 0 {
+		return nil, fmt.Errorf("found no debt or collateral to liquidate, user: %s", user)
+	}
+
 	if err := s.dbWrapper.AddUserReserves(s.chain.ChainName, user, userReserves); err != nil {
 		return nil, fmt.Errorf("failed to add user reserves: %w", err)
 	}
 
+	s.logger.Info("found best liquidation info", zap.String("user", user), zap.Any("liquidationInfo", liquidationInfo.String()))
 	return &liquidationInfo, nil
 }

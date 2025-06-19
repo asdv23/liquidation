@@ -108,17 +108,17 @@ func (w *DBWrapper) GetActiveLoansByToken(chainName string, tokenAddress string)
 func (w *DBWrapper) GetLiquidationLoans(ctx context.Context, chainName string) ([]*models.Loan, error) {
 	loans := make([]*models.Loan, 0)
 	if err := w.db.Where(&models.Loan{ChainName: chainName, IsActive: true}).Where(
-		"health_factor < ? AND health_factor > 0", 1,
+		"health_factor < ?", 1,
 	).Find(&loans).Error; err != nil {
 		return nil, fmt.Errorf("failed to get liquidation loans: %w", err)
 	}
 	return loans, nil
 }
 
-func (w *DBWrapper) GetNullLiquidationLoans(ctx context.Context, chainName string) ([]*models.Loan, error) {
+func (w *DBWrapper) GetNoLiquidationInfoLoans(ctx context.Context, chainName string) ([]*models.Loan, error) {
 	loans := make([]*models.Loan, 0)
 	if err := w.db.Where(&models.Loan{ChainName: chainName, IsActive: true}).Where(
-		"liquidation_collateral_asset IS NULL",
+		"liquidation_collateral_asset IS NULL OR liquidation_debt_asset IS NULL",
 	).Find(&loans).Error; err != nil {
 		return nil, fmt.Errorf("failed to get liquidation loans: %w", err)
 	}
@@ -128,6 +128,14 @@ func (w *DBWrapper) GetNullLiquidationLoans(ctx context.Context, chainName strin
 func (w *DBWrapper) GetLoan(ctx context.Context, chainName, user string) (*models.Loan, error) {
 	loan := &models.Loan{}
 	if err := w.db.Where(&models.Loan{ChainName: chainName, User: user}).First(&loan).Error; err != nil {
+		return nil, fmt.Errorf("failed to get active loan: %w", err)
+	}
+	return loan, nil
+}
+
+func (w *DBWrapper) GetActiveLoan(ctx context.Context, chainName, user string) (*models.Loan, error) {
+	loan := &models.Loan{}
+	if err := w.db.Where(&models.Loan{ChainName: chainName, User: user, IsActive: true}).First(&loan).Error; err != nil {
 		return nil, fmt.Errorf("failed to get active loan: %w", err)
 	}
 	return loan, nil
@@ -190,23 +198,27 @@ func (w *DBWrapper) GetUserReserves(chainName string, user string) ([]*models.Re
 	return reserves, nil
 }
 
-// select * from reserves where chain_name = ? and user in(select user from reserves where chain_name = ? and reserve in (?))
+// select * from reserves where chain_name = ? and user in
+// (select user from reserves left join loans on reserves.chain_name = loans.chain_name and reserves.user = loans.user
+// where loans.is_active = true and reserves.chain_name = ? and reserves.reserve in (?))
+// 查出某条链上所有 reserves，前提是这些 reserves.user 满足：
+// 他们拥有某个 reserve in (?)
+// 并且和 loans 表中匹配的 loan 是激活状态（is_active = true）
 func (w *DBWrapper) GetUserReservesByReserves(chainName string, reserves []string) ([]*models.Reserve, error) {
-	var userReserves []*models.Reserve
-
 	subQuery := w.db.Model(&models.Reserve{}).
-		Select("user").
-		Where("chain_name = ? AND reserve IN (?)", chainName, reserves)
+		Select("reserves.user").
+		Joins("LEFT JOIN loans ON reserves.chain_name = loans.chain_name AND reserves.user = loans.user").
+		Where("loans.is_active = ? AND reserves.chain_name = ? AND reserves.reserve IN (?)", true, chainName, reserves)
 
+	var results []*models.Reserve
 	err := w.db.Model(&models.Reserve{}).
 		Where("chain_name = ? AND user IN (?)", chainName, subQuery).
-		Find(&userReserves).Error
+		Find(&results).Error
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to get user reserves by reserves: %w", err)
+		return nil, fmt.Errorf("failed to query reserves: %w", err)
 	}
-
-	return userReserves, nil
+	return results, nil
 }
 
 func (w *DBWrapper) GetLiquidationInfo(chainName string, user string) (*models.LiquidationInfo, error) {
@@ -223,7 +235,7 @@ func (w *DBWrapper) AddUserReserves(chainName string, user string, reserves []*m
 		if err := w.db.Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "chain_name"}, {Name: "user"}, {Name: "reserve"}},
 			DoUpdates: clause.AssignmentColumns([]string{
-				`amount`, `amount_base`, `is_borrowing`, `is_using_as_collateral`,
+				`amount`, `is_borrowing`, `is_using_as_collateral`,
 			}),
 		}).Create(&reserve).Error; err != nil {
 			return fmt.Errorf("failed to upsert user reserve: %w", err)

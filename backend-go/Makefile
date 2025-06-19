@@ -1,9 +1,9 @@
 build:
-	go build -o liquidation-bot cmd/main.go
+	go build -o ./bin/liquidation-bot cmd/main.go
 
 run:
-	./liquidation-bot
+	go run cmd/main.go
 
 clean:
-	rm -f liquidation-bot
+	rm -f ./bin/liquidation-bot
 	

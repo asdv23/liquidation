@@ -30,8 +30,9 @@ LiquidationCall - height:30672598
     "receiveAToken":false
 }
 ```
-### 2. fork base
-anvil --fork-url https://opt-mainnet.g.alchemy.com/v2/0aoAtW5IQvhhwLgW4wFQFbW7eM4czhOb --fork-block-number 136601194 --port 8546
+### 2. fork base(number-1)
+anvil --fork-url https://base-mainnet.g.alchemy.com/v2/0aoAtW5IQvhhwLgW4wFQFbW7eM4czhOb --fork-block-number 30672597 --port 8546
+export ETH_RPC_URL=http://localhost:8546
 cast send --value 1ether 0xFcc65cb843f0667883f3Ac805291511c76B0B5EF --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 
 #### 验证可以清算 - 查询链上健康因子
@@ -79,14 +80,11 @@ forge script --broadcast \
 --rpc-url $ETH_RPC_URL \
 --private-key $PRIVATE_KEY \
 --sig 'run()' \
-script/deployParameters/DeployETH.s.sol:UpgradeETH
+script/deployParameters/DeployBase.s.sol:DeployBase
 
 == Logs ==
-  params.aaveV3Pool 0xA238Dd80C259a72e81d7e4664a9801593F98d1c5
-  params.usdc 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
-  params.swapRouter02 0x2626664c2603336E57B271c5C0b26F421741e481
-  params.uniswapV3Dex 0x37767d8102966577A4f5c7930e0657C592E5061b
-  params.flashLoanLiquidation 0x1E5fc0875e2646562Cf694d992182CBb96033Ce4
+  uniswapV3Dex 0x8A0f7Fa9ac1Afd23121f20a51F646B9Faf10E968
+  flashLoanLiquidation 0x3a92c8145cb9694e2E52654707f3Fa71021fc4AC
 ```
 
 ### 设置后端环境, 成功则查询余额

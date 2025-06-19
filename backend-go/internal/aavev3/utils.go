@@ -51,13 +51,14 @@ func amountToBase(amount, decimals *big.Int, price *big.Int) *big.Int {
 	}
 
 	// 计算 USD 价值
+	amountFloat, _ := new(big.Float).SetString(amount.String())
 	priceFloat, _ := new(big.Float).SetString(price.String())
 
 	// 考虑精度
 	decimalsFactor, _ := new(big.Float).SetString(new(big.Int).Exp(big.NewInt(10), decimals, nil).String())
 
-	value, _ := new(big.Float).SetString(amount.String())
-	value.Quo(value, decimalsFactor)
+	value := new(big.Float)
+	value.Quo(amountFloat, decimalsFactor)
 	value.Mul(value, priceFloat)
 	base, _ := value.Int(nil)
 	return base
@@ -72,20 +73,20 @@ func amountToUSD(amount, decimals *big.Int, price *big.Int) float64 {
 	return usdFloat
 }
 
-// amount = usd * 10^8 / price * 10^decimals
-func USDToAmount(usd float64, decimals, price *big.Int) *big.Int {
+// amount = usd / price * 10^decimals
+func baseToAmount(base, decimals, price *big.Int) *big.Int {
 	if price == nil || price.Sign() == 0 {
 		return big.NewInt(0)
 	}
 
 	// 将 USD 转换为代币数量
-	usdFloat := new(big.Float).SetFloat64(usd)
+	baseFloat, _ := new(big.Float).SetString(base.String())
 	priceFloat, _ := new(big.Float).SetString(price.String())
 	decimalsFactor, _ := new(big.Float).SetString(new(big.Int).Exp(big.NewInt(10), decimals, nil).String())
 
 	// 计算代币数量
-	amount := new(big.Float).Mul(usdFloat, USD_DECIMALS)
-	amount.Quo(amount, priceFloat)
+	amount := new(big.Float)
+	amount.Quo(baseFloat, priceFloat)
 	amount.Mul(amount, decimalsFactor)
 
 	// 转换为大整数

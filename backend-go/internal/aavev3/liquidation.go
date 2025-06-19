@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/avast/retry-go/v4"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/holiman/uint256"
@@ -24,174 +25,157 @@ const (
 )
 
 func (s *Service) executeLiquidation(ctx context.Context, loan *models.Loan) error {
-	if loan.LiquidationInfo == nil {
-		userConfigs, err := s.getUserConfigurationForBatch([]string{loan.User})
-		if err != nil {
-			return fmt.Errorf("failed to get user configurations: %w", err)
-		}
-		loan.LiquidationInfo, err = s.findBestLiquidationInfo(loan.User, userConfigs[0])
-		if err != nil {
-			return fmt.Errorf("failed to find best liquidation info: %w", err)
-		}
+	if loan.LiquidationInfo == nil || loan.LiquidationInfo.DebtAsset == "" || loan.LiquidationInfo.CollateralAsset == "" {
+		return fmt.Errorf("liquidation info is nil, user: %s", loan.User)
+	}
+
+	debtTokenInfo, err := s.dbWrapper.GetTokenInfo(s.chain.ChainName, loan.LiquidationInfo.DebtAsset)
+	if err != nil {
+		return fmt.Errorf("failed to get debt token info: %w", err)
 	}
 
 	// 全量清算 or 部分清算
 	debtToCover := uint256.MustFromHex("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
-	// debtToCoverUSD := loan.LiquidationInfo.DebtAmountBase.BigInt()
-	// if loan.LiquidationInfo.CollateralAmountBase.BigInt().Cmp(loan.LiquidationInfo.DebtAmountBase.BigInt()) < 0 {
-	// 部分清算
-	// debtTokenInfo, err := s.dbWrapper.GetTokenInfo(s.chain.ChainName, loan.LiquidationInfo.DebtAsset)
-	// if err != nil {
-	// 	return fmt.Errorf("failed to get debt token info: %w", err)
-	// }
-	// part := big.NewInt(0).Mul(loan.LiquidationInfo.CollateralAmountBase.BigInt(), big.NewInt(999))
-	// debtToCoverUSD = part.Div(part, big.NewInt(1000))
-	// debtToCover = uint256.MustFromBig(USDToAmount(debtToCoverUSD.Float64(), debtTokenInfo.Decimals.BigInt(), debtTokenInfo.Price.BigInt()))
-	// }
+	debtToCoverBase := amountToBase(loan.LiquidationInfo.DebtAmountBase.BigInt(), debtTokenInfo.Decimals.BigInt(), debtTokenInfo.Price.BigInt())
+	if loan.LiquidationInfo.CollateralAmountBase.BigInt().Cmp(loan.LiquidationInfo.DebtAmountBase.BigInt()) < 0 {
+		// 部分清算
+		debtToCoverBase.Mul(loan.LiquidationInfo.CollateralAmountBase.BigInt(), big.NewInt(999))
+		debtToCoverBase.Div(debtToCoverBase, big.NewInt(1000))
+		debtToCover = uint256.MustFromBig(baseToAmount(debtToCoverBase, debtTokenInfo.Decimals.BigInt(), debtTokenInfo.Price.BigInt()))
+		s.logger.Info("partial liquidation", zap.String("user", loan.User),
+			zap.String("debtToCover", debtToCover.String()),
+			zap.String("debtToCoverBase", debtToCoverBase.String()),
+		)
+	}
 
 	s.logger.Info("💰 Executing flash loan liquidation with aggregator:", zap.String("user", loan.User), zap.Float64("healthFactor", loan.HealthFactor),
 		zap.String("collateralAsset", loan.LiquidationInfo.CollateralAsset),
 		zap.String("debtAsset", loan.LiquidationInfo.DebtAsset),
 		zap.String("debtToCover", debtToCover.String()),
-		// zap.String("debtToCoverUSD", fmt.Sprintf("%f", debtToCoverUSD)),
+		zap.String("debtToCoverBase", debtToCoverBase.String()),
 	)
 
-	// TODO: Retry replace for select-case
-	go s.liquidateWithUniswapV3(ctx, loan, debtToCover)
-	// go s.liquidateWithOdos(ctx, loan, debtToCover, debtToCoverUSD)
+	go func() {
+		if err := retry.Do(func() error {
+			return s.liquidateWithUniswapV3(ctx, loan, debtToCover)
+		}, retry.Attempts(3), retry.Delay(100*time.Millisecond), retry.LastErrorOnly(true)); err != nil {
+			s.logger.Error("failed to liquidate with uniswap v3", zap.Error(err))
+		}
+	}()
+	go func() {
+		if err := retry.Do(func() error {
+			return s.liquidateWithOdos(ctx, loan, debtToCover, debtToCoverBase)
+		}, retry.Attempts(3), retry.Delay(100*time.Millisecond), retry.LastErrorOnly(true)); err != nil {
+			s.logger.Error("failed to liquidate with odos", zap.Error(err))
+		}
+	}()
 
 	return nil
 }
 
-func (s *Service) liquidateWithUniswapV3(ctx context.Context, loan *models.Loan, debtToCover *uint256.Int) {
-	logger := s.logger.Named("uniswap-v3").With()
+func (s *Service) liquidateWithUniswapV3(ctx context.Context, loan *models.Loan, debtToCover *uint256.Int) error {
+	logger := s.logger.Named("uniswap-v3").With(zap.String("user", loan.User))
 	auth, err := s.chain.GetAuth()
 	if err != nil {
-		logger.Error("failed to get auth", zap.Error(err))
-		return
+		return fmt.Errorf("failed to get auth: %w", err)
 	}
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(100 * time.Millisecond):
-			// use high gas tip
-			gasTipCap, err := s.chain.GetClient().SuggestGasTipCap(ctx)
-			if err != nil {
-				logger.Error("failed to suggest gas price", zap.Error(err))
-				continue
-			}
-			tip := gasTipCap.Mul(gasTipCap, big.NewInt(15)).Div(gasTipCap, big.NewInt(10))
-			auth.GasTipCap = tip
-			auth.GasFeeCap = tip.Add(tip, s.chain.GetBaseFee())
-
-			// use pending state
-			auth.Nonce = nil
-			// auto estimate gas limit
-			auth.GasLimit = 0
-
-			logger.Info("prepared uniswap v3 gas params",
-				zap.String("gasTipCap", gasTipCap.String()),
-				zap.String("tip", tip.String()),
-				zap.String("baseFee", s.chain.GetBaseFee().String()),
-				zap.String("feeCap", auth.GasFeeCap.String()),
-			)
-
-			// send tx
-			tx, err := s.chain.GetContracts().FlashLoanLiquidation.ExecuteLiquidation(auth,
-				common.HexToAddress(loan.LiquidationInfo.CollateralAsset),
-				common.HexToAddress(loan.LiquidationInfo.DebtAsset),
-				common.HexToAddress(loan.User),
-				debtToCover.ToBig(),
-				[]byte{},
-			)
-			if err != nil {
-				logger.Error("failed to execute liquidation", zap.Error(err))
-				return
-			}
-			logger.Info("Liquidation with uniswap v3 transaction sent", zap.String("txHash", tx.Hash().Hex()))
-		}
+	// use high gas tip
+	gasTipCap, err := s.chain.GetClient().SuggestGasTipCap(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to suggest gas price: %w", err)
 	}
+	tip := gasTipCap.Mul(gasTipCap, big.NewInt(15)).Div(gasTipCap, big.NewInt(10))
+	auth.GasTipCap = tip
+	auth.GasFeeCap = tip.Add(tip, s.chain.GetBaseFee())
+
+	// use pending state
+	auth.Nonce = nil
+	// auto estimate gas limit
+	auth.GasLimit = 0
+
+	logger.Info("prepared uniswap v3 gas params",
+		zap.String("gasTipCap", gasTipCap.String()),
+		zap.String("tip", tip.String()),
+		zap.String("baseFee", s.chain.GetBaseFee().String()),
+		zap.String("feeCap", auth.GasFeeCap.String()),
+	)
+
+	// send tx
+	tx, err := s.chain.GetContracts().FlashLoanLiquidation.ExecuteLiquidation(auth,
+		common.HexToAddress(loan.LiquidationInfo.CollateralAsset),
+		common.HexToAddress(loan.LiquidationInfo.DebtAsset),
+		common.HexToAddress(loan.User),
+		debtToCover.ToBig(),
+		[]byte{},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to send execute liquidation tx: %w", err)
+	}
+	logger.Info("Liquidation with uniswap v3 transaction sent", zap.String("txHash", tx.Hash().Hex()))
+	return nil
 }
 
-func (s *Service) liquidateWithOdos(ctx context.Context, loan *models.Loan, debtToCover *uint256.Int, debtToCoverUSD float64) {
+func (s *Service) liquidateWithOdos(ctx context.Context, loan *models.Loan, debtToCover *uint256.Int, debtToCoverBase *big.Int) error {
 	logger := s.logger.Named("odos").With(zap.String("user", loan.User))
 	auth, err := s.chain.GetAuth()
 	if err != nil {
-		logger.Error("failed to get auth", zap.Error(err))
-		return
+		return fmt.Errorf("failed to get auth: %w", err)
 	}
 
 	// 获取 aggregator data
-	pathData, err := s.getAggregatorData(ctx, logger, loan, debtToCoverUSD)
+	pathData, err := s.getAggregatorData(logger, loan, debtToCoverBase)
 	if err != nil {
-		logger.Error("failed to get aggregator data", zap.Error(err))
-		return
+		return fmt.Errorf("failed to get aggregator data: %w", err)
 	}
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(60 * time.Second):
-			pathData, err = s.getAggregatorData(ctx, logger, loan, debtToCoverUSD)
-			if err != nil {
-				logger.Error("failed to get aggregator data", zap.Error(err))
-				continue
-			}
-		case <-time.After(100 * time.Millisecond):
-			// use high gas tip
-			gasTipCap, err := s.chain.GetClient().SuggestGasTipCap(ctx)
-			if err != nil {
-				logger.Error("failed to suggest gas price", zap.Error(err))
-				continue
-			}
-			tip := gasTipCap.Mul(gasTipCap, big.NewInt(15)).Div(gasTipCap, big.NewInt(10))
-			auth.GasTipCap = tip
-			auth.GasFeeCap = tip.Add(tip, s.chain.GetBaseFee())
-
-			// use pending state
-			auth.Nonce = nil
-			// auto estimate gas limit
-			auth.GasLimit = 0
-
-			logger.Info("prepared odos gas params",
-				zap.String("gasTipCap", gasTipCap.String()),
-				zap.String("tip", tip.String()),
-				zap.String("baseFee", s.chain.GetBaseFee().String()),
-				zap.String("feeCap", auth.GasFeeCap.String()),
-				zap.String("pathData", common.Bytes2Hex(pathData)),
-			)
-
-			// send tx
-			tx, err := s.chain.GetContracts().FlashLoanLiquidation.ExecuteLiquidation(auth,
-				common.HexToAddress(loan.LiquidationInfo.CollateralAsset),
-				common.HexToAddress(loan.LiquidationInfo.DebtAsset),
-				common.HexToAddress(loan.User),
-				debtToCover.ToBig(),
-				pathData,
-			)
-			if err != nil {
-				logger.Error("failed to execute liquidation", zap.Error(err))
-				return
-			}
-			logger.Info("Liquidation with odos transaction sent", zap.String("txHash", tx.Hash().Hex()))
-		}
+	// use high gas tip
+	gasTipCap, err := s.chain.GetClient().SuggestGasTipCap(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to suggest gas price: %w", err)
 	}
+	tip := gasTipCap.Mul(gasTipCap, big.NewInt(15)).Div(gasTipCap, big.NewInt(10))
+	auth.GasTipCap = tip
+	auth.GasFeeCap = tip.Add(tip, s.chain.GetBaseFee())
+
+	// use pending state
+	auth.Nonce = nil
+	// auto estimate gas limit
+	auth.GasLimit = 0
+
+	logger.Info("prepared odos gas params",
+		zap.String("gasTipCap", gasTipCap.String()),
+		zap.String("tip", tip.String()),
+		zap.String("baseFee", s.chain.GetBaseFee().String()),
+		zap.String("feeCap", auth.GasFeeCap.String()),
+		zap.String("pathData", common.Bytes2Hex(pathData)),
+	)
+
+	// send tx
+	tx, err := s.chain.GetContracts().FlashLoanLiquidation.ExecuteLiquidation(auth,
+		common.HexToAddress(loan.LiquidationInfo.CollateralAsset),
+		common.HexToAddress(loan.LiquidationInfo.DebtAsset),
+		common.HexToAddress(loan.User),
+		debtToCover.ToBig(),
+		pathData,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to execute liquidation: %w", err)
+	}
+	logger.Info("Liquidation with odos transaction sent", zap.String("txHash", tx.Hash().Hex()))
+	return nil
 }
 
 // getAggregatorData 从 Odos API 获取聚合器数据
-func (s *Service) getAggregatorData(ctx context.Context, logger *zap.Logger, loan *models.Loan, debtToCoverUSD float64) ([]byte, error) {
+func (s *Service) getAggregatorData(logger *zap.Logger, loan *models.Loan, debtToCoverBase *big.Int) ([]byte, error) {
 	collateralTokenInfo, err := s.dbWrapper.GetTokenInfo(s.chain.ChainName, loan.LiquidationInfo.CollateralAsset)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get collateral token info: %w", err)
 	}
-	collateralAmount := USDToAmount(debtToCoverUSD, collateralTokenInfo.Decimals.BigInt(), collateralTokenInfo.Price.BigInt())
+	collateralAmount := baseToAmount(debtToCoverBase, collateralTokenInfo.Decimals.BigInt(), collateralTokenInfo.Price.BigInt())
 
-	usdc := s.chain.GetContracts().Addresses[blockchain.ContractTypeUSDC].Hex()
-
+	// quote request
 	inputAmount := big.NewInt(0)
-	//nolint:staticcheck // SA4006: this variable is used in QuotePayload
 	outputTokens := make([]OutputToken, 0)
+	usdc := s.chain.GetContracts().Addresses[blockchain.ContractTypeUSDC].Hex()
 	if loan.LiquidationInfo.CollateralAsset == usdc {
 		inputAmount = collateralAmount.Mul(collateralAmount, big.NewInt(958)).Div(collateralAmount, big.NewInt(1000))
 		outputTokens = []OutputToken{
@@ -221,6 +205,9 @@ func (s *Service) getAggregatorData(ctx context.Context, logger *zap.Logger, loa
 			},
 		}
 	}
+	if inputAmount.Cmp(big.NewInt(0)) == 0 {
+		return nil, fmt.Errorf("input amount is 0")
+	}
 
 	// 构建请求数据
 	payload := QuotePayload{
@@ -244,11 +231,7 @@ func (s *Service) getAggregatorData(ctx context.Context, logger *zap.Logger, loa
 		return nil, fmt.Errorf("encode payload: %w", err)
 	}
 	// 发送请求
-	resp, err := http.Post(
-		"https://api.odos.xyz/sor/quote/v2",
-		"application/json",
-		&buf,
-	)
+	resp, err := http.Post(ODOS_QUOTE_URL, "application/json", &buf)
 	if err != nil {
 		return nil, fmt.Errorf("post to odos api: %w", err)
 	}
@@ -262,15 +245,15 @@ func (s *Service) getAggregatorData(ctx context.Context, logger *zap.Logger, loa
 
 	// 如果没有 pathId，返回空字符串
 	if result.PathID == "" {
-		return nil, fmt.Errorf("no path id")
+		return nil, fmt.Errorf("no path id, errCode: %d, detail: %s", result.ErrCode, result.Detail)
 	}
 
 	// 获取路径数据
-	return s.getPathData(ctx, result.PathID)
+	return s.getPathData(logger, result.PathID)
 }
 
 // getPathData 从 Odos API 获取路径数据
-func (s *Service) getPathData(_ context.Context, pathID string) ([]byte, error) {
+func (s *Service) getPathData(logger *zap.Logger, pathID string) ([]byte, error) {
 	usdc := s.chain.GetContracts().Addresses[blockchain.ContractTypeUSDC].Hex()
 	receiver := s.chain.GetContracts().Addresses[blockchain.ContractTypeFlashLoanLiquidation].Hex()
 
@@ -286,11 +269,7 @@ func (s *Service) getPathData(_ context.Context, pathID string) ([]byte, error) 
 	}
 
 	// 发送请求
-	resp, err := http.Post(
-		ODOS_ASSEMBLE_URL,
-		"application/json",
-		&buf,
-	)
+	resp, err := http.Post(ODOS_ASSEMBLE_URL, "application/json", &buf)
 	if err != nil {
 		return nil, fmt.Errorf("post to odos api: %w", err)
 	}
@@ -306,7 +285,6 @@ func (s *Service) getPathData(_ context.Context, pathID string) ([]byte, error) 
 		return nil, fmt.Errorf("no transaction")
 	}
 
-	// abi.encode([address, address, bytes], [usdc, result.Transaction.To, result.Transaction.Data])
 	return encodeData(usdc, receiver, result.Transaction.Data)
 }
 
