@@ -198,11 +198,7 @@ func (s *Service) calcUserHealthFactor(ctx context.Context, user string, liquida
 	liquidationInfo.LiquidationThreshold = loan.LiquidationInfo.LiquidationThreshold
 	loan.LiquidationInfo = liquidationInfo
 
-	y := new(big.Int)
-	y = y.Mul(liquidationInfo.TotalCollateralBase.BigInt(), loan.LiquidationInfo.LiquidationThreshold.BigInt())
-	y = y.Div(y, liquidationInfo.TotalDebtBase.BigInt())
-	healthFactor := formatHealthFactor(y)
-
+	healthFactor := calcHealthFactor(liquidationInfo.TotalCollateralBase.BigInt(), liquidationInfo.TotalDebtBase.BigInt(), loan.LiquidationInfo.LiquidationThreshold.BigInt())
 	if healthFactor < 1 {
 		s.logger.Info("user health factor is below threshold", zap.String("user", user), zap.Float64("healthFactor", healthFactor))
 		s.toBeLiquidatedChan <- user

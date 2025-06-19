@@ -12,9 +12,9 @@ import (
 )
 
 var (
-	MIN_DEBT_USD = big.NewFloat(2)
-	USD_DECIMALS = big.NewFloat(1e8)
-	HF_DECIMALS  = big.NewFloat(1e18)
+	MIN_DEBT_BASE = big.NewInt(2e8)
+	USD_DECIMALS  = big.NewFloat(1e8)
+	HF_DECIMALS   = big.NewFloat(1e18)
 )
 
 func formatHealthFactor(healthFactor *big.Int) float64 {

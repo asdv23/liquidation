@@ -28,6 +28,12 @@ func (s *Service) executeLiquidation(ctx context.Context, loan *models.Loan) err
 	if loan.LiquidationInfo == nil || loan.LiquidationInfo.DebtAsset == "" || loan.LiquidationInfo.CollateralAsset == "" {
 		return fmt.Errorf("liquidation info is nil, user: %s", loan.User)
 	}
+	//	deactivate user if debt is less than MIN_DEBT_BASE
+	if loan.LiquidationInfo.TotalDebtBase.BigInt().Cmp(MIN_DEBT_BASE) < 0 {
+		s.logger.Info("total debt base is less than MIN_DEBT_BASE", zap.String("user", loan.User), zap.Any("debtBase", loan.LiquidationInfo.TotalDebtBase.BigInt()), zap.Any("minDebtBase", MIN_DEBT_BASE))
+		
+		return nil
+	}
 
 	debtTokenInfo, err := s.dbWrapper.GetTokenInfo(s.chain.ChainName, loan.LiquidationInfo.DebtAsset)
 	if err != nil {
@@ -82,7 +88,7 @@ func (s *Service) liquidateWithUniswapV3(ctx context.Context, loan *models.Loan,
 	// use high gas tip
 	gasTipCap, err := s.chain.GetClient().SuggestGasTipCap(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to suggest gas price: %w", err)
+		return fmt.Errorf("failed to suggest gas price: %w, user: %s", err, loan.User)
 	}
 	tip := gasTipCap.Mul(gasTipCap, big.NewInt(15)).Div(gasTipCap, big.NewInt(10))
 	auth.GasTipCap = tip
@@ -130,7 +136,7 @@ func (s *Service) liquidateWithOdos(ctx context.Context, loan *models.Loan, debt
 	// use high gas tip
 	gasTipCap, err := s.chain.GetClient().SuggestGasTipCap(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to suggest gas price: %w", err)
+		return fmt.Errorf("failed to suggest gas price: %w, user: %s", err, loan.User)
 	}
 	tip := gasTipCap.Mul(gasTipCap, big.NewInt(15)).Div(gasTipCap, big.NewInt(10))
 	auth.GasTipCap = tip

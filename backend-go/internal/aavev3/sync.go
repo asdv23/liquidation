@@ -66,9 +66,9 @@ func (s *Service) processBatch(batchUsers []string, activeLoans map[string]*mode
 			continue
 		}
 
-		//	deactivate user if debt is less than MIN_DEBT_USD
-		if debtUSD := big.NewFloat(0).Quo(big.NewFloat(0).SetInt(accountData.TotalDebtBase), USD_DECIMALS); debtUSD.Cmp(MIN_DEBT_USD) < 0 {
-			s.logger.Info("total debt base is less than MIN_DEBT_USD", zap.String("user", user), zap.Any("debtUSD", debtUSD), zap.Any("minDebtUSD", MIN_DEBT_USD))
+		//	deactivate user if debt is less than MIN_DEBT_BASE
+		if debtBase := accountData.TotalDebtBase; debtBase.Cmp(MIN_DEBT_BASE) < 0 {
+			s.logger.Info("total debt base is less than MIN_DEBT_BASE", zap.String("user", user), zap.Any("debtBase", debtBase), zap.Any("minDebtBase", MIN_DEBT_BASE))
 			deactivateUsers = append(deactivateUsers, user)
 			continue
 		}

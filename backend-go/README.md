@@ -96,7 +96,11 @@ go build -o liquidation-bot cmd/main.go
 MIT 
 
 # 使用 PM2 启动服务
-PRIVATE_KEY=$(echo $PRIVATE_KEY) pm2 start liquidation-bot --name "bot" --log-date-format "YYYY-MM-DD HH:mm:ss" --merge-logs
+PRIVATE_KEY=$(echo $PRIVATE_KEY) pm2 start ./bin/liquidation-bot --name "bot" --log-date-format "YYYY-MM-DD HH:mm:ss" --merge-logs
+
+# 使用 sup
+supervisord -c /usr/local/etc/supervisord.ini
+
 
 # 查看 sqllite
 brew install sqlite
