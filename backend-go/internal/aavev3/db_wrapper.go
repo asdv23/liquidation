@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"liquidation-bot/internal/models"
 	"math/big"
+	"strings"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -118,7 +120,7 @@ func (w *DBWrapper) GetLiquidationLoans(ctx context.Context, chainName string) (
 func (w *DBWrapper) GetNoLiquidationInfoLoans(ctx context.Context, chainName string) ([]*models.Loan, error) {
 	loans := make([]*models.Loan, 0)
 	if err := w.db.Where(&models.Loan{ChainName: chainName, IsActive: true}).Where(
-		"liquidation_collateral_asset IS NULL OR liquidation_debt_asset IS NULL",
+		"liquidation_collateral_asset IS NULL OR liquidation_debt_asset IS NULL OR liquidation_liquidation_threshold = 0",
 	).Find(&loans).Error; err != nil {
 		return nil, fmt.Errorf("failed to get liquidation loans: %w", err)
 	}
@@ -158,35 +160,10 @@ func (w *DBWrapper) CreateOrUpdateActiveLoan(chainName string, user string) (*mo
 	return &loan, nil
 }
 
-func (w *DBWrapper) UpdateActiveLoanLiquidationInfos(chainName string, liquidationInfos []*UpdateLiquidationInfo) error {
-	// batch update
-	for i := range liquidationInfos {
-		loan := models.Loan{
-			ChainName:       chainName,
-			User:            liquidationInfos[i].User,
-			HealthFactor:    liquidationInfos[i].HealthFactor,
-			LiquidationInfo: liquidationInfos[i].LiquidationInfo,
-			IsActive:        true,
-		}
-		if err := w.db.Model(&models.Loan{}).Where("chain_name = ? AND user = ?", chainName, liquidationInfos[i].User).Updates(loan).Error; err != nil {
-			return fmt.Errorf("failed to update active loan health factor: %w", err)
-		}
-	}
-	return nil
-}
-
 func (w *DBWrapper) DeactivateActiveLoan(chainName string, user []string) error {
 	if err := w.db.Model(&models.Loan{}).Where("chain_name = ? AND user IN (?)", chainName, user).Update("is_active", false).Error; err != nil {
 		return fmt.Errorf("failed to deactivate active loan: %w", err)
 	}
-	return nil
-}
-
-func (w *DBWrapper) UpdateActiveLoan(chainName, user string, loan *models.Loan) error {
-	if err := w.db.Model(&models.Loan{}).Where(&models.Loan{ChainName: chainName, User: user}).Save(loan).Error; err != nil {
-		return fmt.Errorf("failed to save active loan: %w", err)
-	}
-
 	return nil
 }
 
@@ -198,27 +175,35 @@ func (w *DBWrapper) GetUserReserves(chainName string, user string) ([]*models.Re
 	return reserves, nil
 }
 
-// select * from reserves where chain_name = ? and user in
-// (select user from reserves left join loans on reserves.chain_name = loans.chain_name and reserves.user = loans.user
-// where loans.is_active = true and reserves.chain_name = ? and reserves.reserve in (?))
-// 查出某条链上所有 reserves，前提是这些 reserves.user 满足：
-// 他们拥有某个 reserve in (?)
-// 并且和 loans 表中匹配的 loan 是激活状态（is_active = true）
-func (w *DBWrapper) GetUserReservesByReserves(chainName string, reserves []string) ([]*models.Reserve, error) {
-	subQuery := w.db.Model(&models.Reserve{}).
-		Select("reserves.user").
+func (w *DBWrapper) GetUserLoansAndReservesByReserves(chainName string, reserves []string) ([]*models.Loan, []*models.Reserve, error) {
+	// Step 1: 找到符合条件的用户 user 列表
+	var users []string
+	if err := w.db.Model(&models.Reserve{}).
+		Select("DISTINCT reserves.user").
 		Joins("LEFT JOIN loans ON reserves.chain_name = loans.chain_name AND reserves.user = loans.user").
-		Where("loans.is_active = ? AND reserves.chain_name = ? AND reserves.reserve IN (?)", true, chainName, reserves)
-
-	var results []*models.Reserve
-	err := w.db.Model(&models.Reserve{}).
-		Where("chain_name = ? AND user IN (?)", chainName, subQuery).
-		Find(&results).Error
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to query reserves: %w", err)
+		Where("loans.is_active = ? AND reserves.chain_name = ? AND reserves.reserve IN (?)", true, chainName, reserves).
+		Pluck("reserves.user", &users).Error; err != nil {
+		return nil, nil, fmt.Errorf("failed to query users: %w", err)
 	}
-	return results, nil
+	if len(users) == 0 {
+		return nil, nil, fmt.Errorf("no user found")
+	}
+
+	// Step 2: 查询所有这些用户的激活 loans
+	var allLoans []*models.Loan
+	if err := w.db.Where("chain_name = ? AND user IN (?) AND is_active = ?", chainName, users, true).
+		Find(&allLoans).Error; err != nil {
+		return nil, nil, fmt.Errorf("failed to query loans: %w", err)
+	}
+
+	// Step 3: 查询所有这些用户的 reserves
+	var allReserves []*models.Reserve
+	if err := w.db.Where("chain_name = ? AND user IN (?)", chainName, users).
+		Find(&allReserves).Error; err != nil {
+		return nil, nil, fmt.Errorf("failed to query reserves: %w", err)
+	}
+
+	return allLoans, allReserves, nil
 }
 
 func (w *DBWrapper) GetLiquidationInfo(chainName string, user string) (*models.LiquidationInfo, error) {
@@ -240,6 +225,130 @@ func (w *DBWrapper) AddUserReserves(chainName string, user string, reserves []*m
 		}).Create(&reserve).Error; err != nil {
 			return fmt.Errorf("failed to upsert user reserve: %w", err)
 		}
+	}
+
+	return nil
+}
+
+// BatchUpdateLoanLiquidationInfos 高性能批量更新贷款清算信息
+func (w *DBWrapper) BatchUpdateLoanLiquidationInfos(chainName string, liquidationInfos []*UpdateLiquidationInfo) error {
+	if len(liquidationInfos) == 0 {
+		return nil
+	}
+
+	// 构建批量更新 SQL
+	var cases []string
+	var args []interface{}
+
+	// 构建每个用户的 CASE WHEN 语句
+	for _, info := range liquidationInfos {
+		cases = append(cases, "WHEN user = ? THEN ?")
+		args = append(args, info.User, info.HealthFactor)
+	}
+	healthFactorCase := strings.Join(cases, " ")
+
+	// 重置并构建 total_collateral_base 的 CASE WHEN
+	cases = cases[:0]
+	for _, info := range liquidationInfos {
+		cases = append(cases, "WHEN user = ? THEN ?")
+		args = append(args, info.User, info.LiquidationInfo.TotalCollateralBase.String())
+	}
+	totalCollateralBaseCase := strings.Join(cases, " ")
+
+	// 重置并构建 total_debt_base 的 CASE WHEN
+	cases = cases[:0]
+	for _, info := range liquidationInfos {
+		cases = append(cases, "WHEN user = ? THEN ?")
+		args = append(args, info.User, info.LiquidationInfo.TotalDebtBase.String())
+	}
+	totalDebtBaseCase := strings.Join(cases, " ")
+
+	// 重置并构建 collateral_asset 的 CASE WHEN
+	cases = cases[:0]
+	for _, info := range liquidationInfos {
+		cases = append(cases, "WHEN user = ? THEN ?")
+		args = append(args, info.User, info.LiquidationInfo.CollateralAsset)
+	}
+	collateralAssetCase := strings.Join(cases, " ")
+
+	// 重置并构建 collateral_amount 的 CASE WHEN
+	cases = cases[:0]
+	for _, info := range liquidationInfos {
+		cases = append(cases, "WHEN user = ? THEN ?")
+		args = append(args, info.User, info.LiquidationInfo.CollateralAmount.String())
+	}
+	collateralAmountCase := strings.Join(cases, " ")
+
+	// 重置并构建 collateral_amount_base 的 CASE WHEN
+	cases = cases[:0]
+	for _, info := range liquidationInfos {
+		cases = append(cases, "WHEN user = ? THEN ?")
+		args = append(args, info.User, info.LiquidationInfo.CollateralAmountBase.String())
+	}
+	collateralAmountBaseCase := strings.Join(cases, " ")
+
+	// 重置并构建 debt_asset 的 CASE WHEN
+	cases = cases[:0]
+	for _, info := range liquidationInfos {
+		cases = append(cases, "WHEN user = ? THEN ?")
+		args = append(args, info.User, info.LiquidationInfo.DebtAsset)
+	}
+	debtAssetCase := strings.Join(cases, " ")
+
+	// 重置并构建 debt_amount 的 CASE WHEN
+	cases = cases[:0]
+	for _, info := range liquidationInfos {
+		cases = append(cases, "WHEN user = ? THEN ?")
+		args = append(args, info.User, info.LiquidationInfo.DebtAmount.String())
+	}
+	debtAmountCase := strings.Join(cases, " ")
+
+	// 重置并构建 debt_amount_base 的 CASE WHEN
+	cases = cases[:0]
+	for _, info := range liquidationInfos {
+		cases = append(cases, "WHEN user = ? THEN ?")
+		args = append(args, info.User, info.LiquidationInfo.DebtAmountBase.String())
+	}
+	debtAmountBaseCase := strings.Join(cases, " ")
+
+	// 构建完整的更新 SQL
+	sql := fmt.Sprintf(`
+		UPDATE loans 
+		SET health_factor = CASE %s END,
+			liquidation_total_collateral_base = CASE %s END,
+			liquidation_total_debt_base = CASE %s END,
+			liquidation_collateral_asset = CASE %s END,
+			liquidation_collateral_amount = CASE %s END,
+			liquidation_collateral_amount_base = CASE %s END,
+			liquidation_debt_asset = CASE %s END,
+			liquidation_debt_amount = CASE %s END,
+			liquidation_debt_amount_base = CASE %s END,
+			updated_at = ?
+		WHERE chain_name = ? AND user IN (?);`,
+		healthFactorCase,
+		totalCollateralBaseCase,
+		totalDebtBaseCase,
+		collateralAssetCase,
+		collateralAmountCase,
+		collateralAmountBaseCase,
+		debtAssetCase,
+		debtAmountCase,
+		debtAmountBaseCase,
+	)
+
+	// 添加更新时间和查询条件参数
+	args = append(args, time.Now(), chainName)
+
+	// 构建用户列表
+	users := make([]string, len(liquidationInfos))
+	for i, info := range liquidationInfos {
+		users[i] = info.User
+	}
+	args = append(args, users)
+
+	// 执行批量更新
+	if err := w.db.Exec(sql, args...).Error; err != nil {
+		return fmt.Errorf("failed to batch update loan liquidation infos: %w", err)
 	}
 
 	return nil

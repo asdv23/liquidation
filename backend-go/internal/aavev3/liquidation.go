@@ -25,13 +25,12 @@ const (
 )
 
 func (s *Service) executeLiquidation(ctx context.Context, loan *models.Loan) error {
-	if loan.LiquidationInfo == nil || loan.LiquidationInfo.DebtAsset == "" || loan.LiquidationInfo.CollateralAsset == "" {
+	if loan.HealthFactor == 0 || loan.LiquidationInfo == nil || loan.LiquidationInfo.DebtAsset == "" || loan.LiquidationInfo.CollateralAsset == "" {
 		return fmt.Errorf("liquidation info is nil, user: %s", loan.User)
 	}
 	//	deactivate user if debt is less than MIN_DEBT_BASE
 	if loan.LiquidationInfo.TotalDebtBase.BigInt().Cmp(MIN_DEBT_BASE) < 0 {
 		s.logger.Info("total debt base is less than MIN_DEBT_BASE", zap.String("user", loan.User), zap.Any("debtBase", loan.LiquidationInfo.TotalDebtBase.BigInt()), zap.Any("minDebtBase", MIN_DEBT_BASE))
-		
 		return nil
 	}
 
@@ -131,7 +130,7 @@ func (s *Service) liquidateWithOdos(ctx context.Context, loan *models.Loan, debt
 	// 获取 aggregator data
 	pathData, err := s.getAggregatorData(logger, loan, debtToCoverBase)
 	if err != nil {
-		return fmt.Errorf("failed to get aggregator data: %w", err)
+		return fmt.Errorf("failed to get aggregator data: %w, user: %s", err, loan.User)
 	}
 	// use high gas tip
 	gasTipCap, err := s.chain.GetClient().SuggestGasTipCap(ctx)

@@ -26,7 +26,7 @@ type Loan struct {
 type LiquidationInfo struct {
 	TotalCollateralBase  *BigInt
 	TotalDebtBase        *BigInt
-	LiquidationThreshold *BigInt
+	LiquidationThreshold *BigInt // should in outside together with health factor
 	CollateralAsset      string
 	CollateralAmount     *BigInt
 	CollateralAmountBase *BigInt

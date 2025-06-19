@@ -121,7 +121,7 @@ func (s *Service) processBatch(batchUsers []string, activeLoans map[string]*mode
 
 		// 更新 liquidation info 到数据库
 		s.logger.Info("updating loan liquidation infos in database", zap.Any("users", len(updateInfoUsers)))
-		if err := s.dbWrapper.UpdateActiveLoanLiquidationInfos(s.chain.ChainName, updateInfoUsers); err != nil {
+		if err := s.dbWrapper.BatchUpdateLoanLiquidationInfos(s.chain.ChainName, updateInfoUsers); err != nil {
 			return fmt.Errorf("failed to update loan liquidation infos in database: %w", err)
 		}
 

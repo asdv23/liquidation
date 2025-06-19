@@ -104,7 +104,7 @@ func (s *Service) syncPricesForReserveList(ctx context.Context) error {
 	}
 
 	// find all user reserves with updatedReserves
-	userReserves, err := s.dbWrapper.GetUserReservesByReserves(s.chain.ChainName, updatedReserves)
+	userLoans, userReserves, err := s.dbWrapper.GetUserLoansAndReservesByReserves(s.chain.ChainName, updatedReserves)
 	if err != nil {
 		return fmt.Errorf("failed to get user reserves: %w", err)
 	}
@@ -129,7 +129,6 @@ func (s *Service) syncPricesForReserveList(ctx context.Context) error {
 					CollateralAsset:      "",
 					CollateralAmount:     defaultBigInt,
 					CollateralAmountBase: defaultBigInt,
-					LiquidationThreshold: defaultBigInt,
 				}
 			}
 			if userReserve.IsUsingAsCollateral {
@@ -142,7 +141,6 @@ func (s *Service) syncPricesForReserveList(ctx context.Context) error {
 					DebtAsset:            "",
 					DebtAmount:           defaultBigInt,
 					DebtAmountBase:       defaultBigInt,
-					LiquidationThreshold: defaultBigInt,
 				}
 			}
 			continue
@@ -172,44 +170,49 @@ func (s *Service) syncPricesForReserveList(ctx context.Context) error {
 
 	// calc user health factor(need LiquidationThreshold)
 	var wg sync.WaitGroup
-	for user, liquidationInfo := range userLiquidationInfoMap {
-		if liquidationInfo.DebtAsset == "" || liquidationInfo.CollateralAsset == "" {
-			s.logger.Error("debt or collateral is empty, user: %s", zap.String("user", user), zap.String("liquidationInfo", liquidationInfo.String()))
-			continue
+	batchSize := 1000
+	for i := 0; i < len(userLoans); i += batchSize {
+		end := i + batchSize
+		if end > len(userLoans) {
+			end = len(userLoans)
 		}
-
+		batch := userLoans[i:end]
+		s.logger.Info("sync prices for loan list", zap.Int("i", i), zap.Int("total", len(userLoans)), zap.Int("batchSize", batchSize))
 		wg.Add(1)
-		go func(user string, liquidationInfo *models.LiquidationInfo) {
+		go func(batch []*models.Loan) {
 			defer wg.Done()
-			if err := s.calcUserHealthFactor(ctx, user, liquidationInfo); err != nil {
-				s.logger.Error("failed to calc user health factor", zap.Error(err), zap.String("user", user))
+
+			liquidationInfos := make([]*UpdateLiquidationInfo, 0)
+			toBeLiquidated := make([]string, 0)
+			for _, loan := range batch {
+				liquidationInfo := userLiquidationInfoMap[loan.User]
+				if liquidationInfo.DebtAsset == "" || liquidationInfo.CollateralAsset == "" {
+					s.logger.Error("debt or collateral is empty, user: %s", zap.String("user", loan.User), zap.String("liquidationInfo", liquidationInfo.String()))
+					continue
+				}
+				healthFactor := calcHealthFactor(liquidationInfo.TotalCollateralBase.BigInt(), liquidationInfo.TotalDebtBase.BigInt(), loan.LiquidationInfo.LiquidationThreshold.BigInt())
+				s.logger.Info("health factor changed", zap.String("user", loan.User), zap.Float64("lastHealthFactor", loan.HealthFactor), zap.Float64("healthFactor", healthFactor))
+
+				liquidationInfos = append(liquidationInfos, &UpdateLiquidationInfo{
+					User:            loan.User,
+					HealthFactor:    healthFactor,
+					LiquidationInfo: liquidationInfo,
+				})
+
+				if healthFactor < 1 {
+					s.logger.Info("user health factor is below threshold", zap.String("user", loan.User), zap.Float64("healthFactor", healthFactor))
+					toBeLiquidated = append(toBeLiquidated, loan.User)
+				}
 			}
-		}(user, liquidationInfo)
+			if err := s.dbWrapper.BatchUpdateLoanLiquidationInfos(s.chain.ChainName, liquidationInfos); err != nil {
+				s.logger.Error("failed to batch update loan liquidation infos", zap.Error(err))
+			}
+
+			for _, user := range toBeLiquidated {
+				s.toBeLiquidatedChan <- user
+			}
+		}(batch)
 	}
 	wg.Wait()
-	return nil
-}
-
-func (s *Service) calcUserHealthFactor(ctx context.Context, user string, liquidationInfo *models.LiquidationInfo) error {
-	loan, err := s.dbWrapper.GetActiveLoan(ctx, s.chain.ChainName, user)
-	if err != nil {
-		return fmt.Errorf("failed to get loan: %w", err)
-	}
-	liquidationInfo.LiquidationThreshold = loan.LiquidationInfo.LiquidationThreshold
-	loan.LiquidationInfo = liquidationInfo
-
-	healthFactor := calcHealthFactor(liquidationInfo.TotalCollateralBase.BigInt(), liquidationInfo.TotalDebtBase.BigInt(), loan.LiquidationInfo.LiquidationThreshold.BigInt())
-	if healthFactor < 1 {
-		s.logger.Info("user health factor is below threshold", zap.String("user", user), zap.Float64("healthFactor", healthFactor))
-		s.toBeLiquidatedChan <- user
-	}
-
-	if loan.HealthFactor != healthFactor {
-		s.logger.Info("health factor changed", zap.String("user", user), zap.Float64("lastHealthFactor", loan.HealthFactor), zap.Float64("healthFactor", healthFactor))
-		loan.HealthFactor = healthFactor
-		if err := s.dbWrapper.UpdateActiveLoan(s.chain.ChainName, user, loan); err != nil {
-			return fmt.Errorf("failed to update loan: %w", err)
-		}
-	}
 	return nil
 }
