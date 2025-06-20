@@ -12,7 +12,8 @@ type Reserve struct {
 	ChainName           string `gorm:"uniqueIndex:idx_chain_reserve,priority:1"`
 	User                string `gorm:"uniqueIndex:idx_chain_reserve,priority:2"`
 	Reserve             string `gorm:"uniqueIndex:idx_chain_reserve,priority:3"`
-	Amount              *BigInt
+	BorrowedAmount      *BigInt
+	CollateralAmount    *BigInt
 	IsBorrowing         bool
 	IsUsingAsCollateral bool
 	CreatedAt           time.Time

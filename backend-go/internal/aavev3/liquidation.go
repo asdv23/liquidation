@@ -64,14 +64,14 @@ func (s *Service) executeLiquidation(ctx context.Context, loan *models.Loan) err
 		if err := retry.Do(func() error {
 			return s.liquidateWithUniswapV3(ctx, loan, debtToCover)
 		}, retry.Attempts(3), retry.Delay(100*time.Millisecond), retry.LastErrorOnly(true)); err != nil {
-			s.logger.Error("failed to liquidate with uniswap v3", zap.Error(err))
+			s.logger.Error("failed to liquidate with uniswap v3", zap.Error(err), zap.String("user", loan.User))
 		}
 	}()
 	go func() {
 		if err := retry.Do(func() error {
 			return s.liquidateWithOdos(ctx, loan, debtToCover, debtToCoverBase)
 		}, retry.Attempts(3), retry.Delay(100*time.Millisecond), retry.LastErrorOnly(true)); err != nil {
-			s.logger.Error("failed to liquidate with odos", zap.Error(err))
+			s.logger.Error("failed to liquidate with odos", zap.Error(err), zap.String("user", loan.User))
 		}
 	}()
 
@@ -87,7 +87,7 @@ func (s *Service) liquidateWithUniswapV3(ctx context.Context, loan *models.Loan,
 	// use high gas tip
 	gasTipCap, err := s.chain.GetClient().SuggestGasTipCap(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to suggest gas price: %w, user: %s", err, loan.User)
+		return fmt.Errorf("failed to suggest gas price: %w", err)
 	}
 	tip := gasTipCap.Mul(gasTipCap, big.NewInt(15)).Div(gasTipCap, big.NewInt(10))
 	auth.GasTipCap = tip
@@ -130,12 +130,12 @@ func (s *Service) liquidateWithOdos(ctx context.Context, loan *models.Loan, debt
 	// 获取 aggregator data
 	pathData, err := s.getAggregatorData(logger, loan, debtToCoverBase)
 	if err != nil {
-		return fmt.Errorf("failed to get aggregator data: %w, user: %s", err, loan.User)
+		return fmt.Errorf("failed to get aggregator data: %w", err)
 	}
 	// use high gas tip
 	gasTipCap, err := s.chain.GetClient().SuggestGasTipCap(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to suggest gas price: %w, user: %s", err, loan.User)
+		return fmt.Errorf("failed to suggest gas price: %w", err)
 	}
 	tip := gasTipCap.Mul(gasTipCap, big.NewInt(15)).Div(gasTipCap, big.NewInt(10))
 	auth.GasTipCap = tip
@@ -254,11 +254,11 @@ func (s *Service) getAggregatorData(logger *zap.Logger, loan *models.Loan, debtT
 	}
 
 	// 获取路径数据
-	return s.getPathData(logger, result.PathID)
+	return s.getPathData(result.PathID)
 }
 
 // getPathData 从 Odos API 获取路径数据
-func (s *Service) getPathData(logger *zap.Logger, pathID string) ([]byte, error) {
+func (s *Service) getPathData(pathID string) ([]byte, error) {
 	usdc := s.chain.GetContracts().Addresses[blockchain.ContractTypeUSDC].Hex()
 	receiver := s.chain.GetContracts().Addresses[blockchain.ContractTypeFlashLoanLiquidation].Hex()
 

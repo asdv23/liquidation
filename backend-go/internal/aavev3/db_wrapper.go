@@ -263,6 +263,14 @@ func (w *DBWrapper) BatchUpdateLoanLiquidationInfos(chainName string, liquidatio
 	}
 	totalDebtBaseCase := strings.Join(cases, " ")
 
+	// 重置并构建 liquidation_threshold 的 CASE WHEN
+	cases = cases[:0]
+	for _, info := range liquidationInfos {
+		cases = append(cases, "WHEN user = ? THEN ?")
+		args = append(args, info.User, info.LiquidationInfo.LiquidationThreshold.String())
+	}
+	liquidationThresholdCase := strings.Join(cases, " ")
+
 	// 重置并构建 collateral_asset 的 CASE WHEN
 	cases = cases[:0]
 	for _, info := range liquidationInfos {
@@ -317,6 +325,7 @@ func (w *DBWrapper) BatchUpdateLoanLiquidationInfos(chainName string, liquidatio
 		SET health_factor = CASE %s END,
 			liquidation_total_collateral_base = CASE %s END,
 			liquidation_total_debt_base = CASE %s END,
+			liquidation_liquidation_threshold = CASE %s END,
 			liquidation_collateral_asset = CASE %s END,
 			liquidation_collateral_amount = CASE %s END,
 			liquidation_collateral_amount_base = CASE %s END,
@@ -328,6 +337,7 @@ func (w *DBWrapper) BatchUpdateLoanLiquidationInfos(chainName string, liquidatio
 		healthFactorCase,
 		totalCollateralBaseCase,
 		totalDebtBaseCase,
+		liquidationThresholdCase,
 		collateralAssetCase,
 		collateralAmountCase,
 		collateralAmountBaseCase,

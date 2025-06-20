@@ -1,10 +1,12 @@
 package aavev3
 
 import (
+	"context"
 	"fmt"
 	aavev3 "liquidation-bot/bindings/aavev3"
 	"liquidation-bot/internal/models"
 	"math/big"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/zap"
@@ -17,6 +19,30 @@ func (s *Service) syncHealthFactorForUser(user string, loan *models.Loan) error 
 const (
 	batchSize = 100 // 每批处理的用户数量
 )
+
+// 每 5 分钟针对不符合条件的 loan 重新同步
+// - the graph 导入的
+// - 发现脏数据触发重置了清算信息
+func (s *Service) resync(ctx context.Context) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(5 * time.Minute):
+			// 1. 处理没有清算信息的贷款
+			noLiquidationInfoLoans, err := s.dbWrapper.GetNoLiquidationInfoLoans(s.chain.Ctx, s.chain.ChainName)
+			if err != nil {
+				return fmt.Errorf("failed to get loans with no liquidation information: %w", err)
+			}
+			s.logger.Info("found loans with no liquidation information", zap.Int("count", len(noLiquidationInfoLoans)))
+
+			if err := s.syncHealthFactorForLoans(noLiquidationInfoLoans); err != nil {
+				return fmt.Errorf("failed to sync health factor for loans: %w", err)
+			}
+		}
+	}
+
+}
 
 func (s *Service) syncHealthFactorForLoans(loans []*models.Loan) error {
 	if len(loans) == 0 {
@@ -205,6 +231,7 @@ func (s *Service) findBestLiquidationInfo(user string, userConfig *aavev3.DataTy
 		if err != nil {
 			return nil, fmt.Errorf("failed to get token info: %w", err)
 		}
+		reserve := &models.Reserve{ChainName: s.chain.ChainName, User: user, Reserve: asset.Hex()}
 		if isBorrowing(userConfig, i) {
 			debt := big.NewInt(0).Add(userReserveData.CurrentStableDebt, userReserveData.CurrentVariableDebt)
 			base := amountToBase(debt, token.Decimals.BigInt(), token.Price.BigInt())
@@ -215,14 +242,8 @@ func (s *Service) findBestLiquidationInfo(user string, userConfig *aavev3.DataTy
 				liquidationInfo.DebtAmount = models.NewBigInt(debt)
 				liquidationInfo.DebtAsset = asset.Hex()
 			}
-			userReserves = append(userReserves, &models.Reserve{
-				ChainName:           s.chain.ChainName,
-				User:                user,
-				Reserve:             asset.Hex(),
-				Amount:              models.NewBigInt(debt),
-				IsBorrowing:         true,
-				IsUsingAsCollateral: false,
-			})
+			reserve.BorrowedAmount = models.NewBigInt(debt)
+			reserve.IsBorrowing = true
 			s.logger.Info("borrowing", zap.String("user", user), zap.Any("reserve", asset.Hex()), zap.Any("amount", debt), zap.Any("base", base))
 		}
 
@@ -236,16 +257,11 @@ func (s *Service) findBestLiquidationInfo(user string, userConfig *aavev3.DataTy
 				liquidationInfo.CollateralAmount = models.NewBigInt(collateral)
 				liquidationInfo.CollateralAsset = asset.Hex()
 			}
-			userReserves = append(userReserves, &models.Reserve{
-				ChainName:           s.chain.ChainName,
-				User:                user,
-				Reserve:             asset.Hex(),
-				Amount:              models.NewBigInt(collateral),
-				IsBorrowing:         false,
-				IsUsingAsCollateral: true,
-			})
+			reserve.CollateralAmount = models.NewBigInt(collateral)
+			reserve.IsUsingAsCollateral = true
 			s.logger.Info("collateral", zap.String("user", user), zap.Any("reserve", asset.Hex()), zap.Any("amount", collateral), zap.Any("base", base))
 		}
+		userReserves = append(userReserves, reserve)
 	}
 	if liquidationInfo.DebtAmount.BigInt().Cmp(big.NewInt(0)) == 0 || liquidationInfo.CollateralAmount.BigInt().Cmp(big.NewInt(0)) == 0 {
 		return nil, fmt.Errorf("found no debt or collateral to liquidate, user: %s", user)

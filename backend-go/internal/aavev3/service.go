@@ -88,13 +88,17 @@ func (s *Service) Initialize() {
 		eg.Go(func() error {
 			return s.startSyncPricesForReserveList(ctx)
 		})
-		// 3.启动健康因子同步
+		// 3.启动健康因子同步 - useless
 		eg.Go(func() error {
 			return s.startSyncHealthFactorForAllActiveLoans(ctx)
 		})
 		// 4. 启动清算检查
 		eg.Go(func() error {
 			return s.startLiquidation(ctx)
+		})
+		// 5. 启动重同步
+		eg.Go(func() error {
+			return s.resync(ctx)
 		})
 		if err := eg.Wait(); err != nil {
 			s.logger.Error("failed to initialize service", zap.Error(err))
@@ -113,7 +117,7 @@ func (s *Service) startSyncHealthFactorForAllActiveLoans(ctx context.Context) er
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(1 * time.Hour):
+		case <-time.After(12 * time.Hour):
 			activeLoans, err := s.dbWrapper.ChainActiveLoans(s.chain.ChainName)
 			if err != nil {
 				s.logger.Error("failed to get active loans", zap.Error(err))
@@ -187,6 +191,7 @@ func (s *Service) startLiquidation(ctx context.Context) error {
 							continue
 						}
 						if loan.HealthFactor >= 1 {
+							delete(s.liquidatingUsers, user)
 							s.logger.Info("health factor above liquidation threshold, exit liquidation loop", zap.String("user", user))
 							return
 						}

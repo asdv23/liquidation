@@ -9,7 +9,7 @@ clean:
 
 build-pm2:
 	make build && pm2 stop bot
+	pm2 flush && pm2 delete bot
 
 init-pm2:
-	pm2 flush && pm2 delete bot
-	PRIVATE_KEY=$(echo $PRIVATE_KEY) pm2 start ./bin/liquidation-bot --name "bot" --log-date-format "YYYY-MM-DD HH:mm:ss" --merge-logs
+	PRIVATE_KEY=$$PRIVATE_KEY pm2 start ./bin/liquidation-bot --name "bot" --log-date-format "YYYY-MM-DD HH:mm:ss" --merge-logs

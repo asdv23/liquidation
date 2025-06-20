@@ -100,6 +100,7 @@ func (s *Service) syncPricesForReserveList(ctx context.Context) error {
 	}
 
 	if len(updatedReserves) == 0 {
+		s.logger.Info("no updated reserves")
 		return nil
 	}
 
@@ -115,55 +116,44 @@ func (s *Service) syncPricesForReserveList(ctx context.Context) error {
 	// calc total debt and total collateral for each user
 	for _, userReserve := range userReserves {
 		tokenInfo := tokenInfoMap[userReserve.Reserve]
-		amountBase := amountToBase(userReserve.Amount.BigInt(), tokenInfo.Decimals.BigInt(), tokenInfo.Price.BigInt())
-		amountBaseBigInt := models.NewBigInt(amountBase)
+		borrowedAmountBase := models.NewBigInt(amountToBase(userReserve.BorrowedAmount.BigInt(), tokenInfo.Decimals.BigInt(), tokenInfo.Price.BigInt()))
+		collateralAmountBase := models.NewBigInt(amountToBase(userReserve.CollateralAmount.BigInt(), tokenInfo.Decimals.BigInt(), tokenInfo.Price.BigInt()))
 		if _, ok := userLiquidationInfoMap[userReserve.User]; !ok {
-			defaultBigInt := models.NewBigInt(big.NewInt(0))
+			liquidationInfo := &models.LiquidationInfo{}
 			if userReserve.IsBorrowing {
-				userLiquidationInfoMap[userReserve.User] = &models.LiquidationInfo{
-					TotalDebtBase:        amountBaseBigInt,
-					DebtAsset:            userReserve.Reserve,
-					DebtAmount:           userReserve.Amount,
-					DebtAmountBase:       amountBaseBigInt,
-					TotalCollateralBase:  defaultBigInt,
-					CollateralAsset:      "",
-					CollateralAmount:     defaultBigInt,
-					CollateralAmountBase: defaultBigInt,
-				}
+				liquidationInfo.TotalDebtBase = borrowedAmountBase
+				liquidationInfo.DebtAsset = userReserve.Reserve
+				liquidationInfo.DebtAmount = userReserve.BorrowedAmount
+				liquidationInfo.DebtAmountBase = borrowedAmountBase
 			}
 			if userReserve.IsUsingAsCollateral {
-				userLiquidationInfoMap[userReserve.User] = &models.LiquidationInfo{
-					TotalCollateralBase:  amountBaseBigInt,
-					CollateralAsset:      userReserve.Reserve,
-					CollateralAmount:     userReserve.Amount,
-					CollateralAmountBase: amountBaseBigInt,
-					TotalDebtBase:        defaultBigInt,
-					DebtAsset:            "",
-					DebtAmount:           defaultBigInt,
-					DebtAmountBase:       defaultBigInt,
-				}
+				liquidationInfo.TotalCollateralBase = collateralAmountBase
+				liquidationInfo.CollateralAsset = userReserve.Reserve
+				liquidationInfo.CollateralAmount = userReserve.CollateralAmount
+				liquidationInfo.CollateralAmountBase = collateralAmountBase
 			}
+			userLiquidationInfoMap[userReserve.User] = liquidationInfo
 			continue
 		}
 		liquidationInfo := userLiquidationInfoMap[userReserve.User]
 
 		// update total debt and max debt amount
 		if userReserve.IsBorrowing {
-			liquidationInfo.TotalDebtBase = liquidationInfo.TotalDebtBase.Add(amountBaseBigInt)
-			if liquidationInfo.DebtAsset == "" || amountBaseBigInt.BigInt().Cmp(liquidationInfo.DebtAmountBase.BigInt()) > 0 {
+			liquidationInfo.TotalDebtBase = liquidationInfo.TotalDebtBase.Add(borrowedAmountBase)
+			if borrowedAmountBase.BigInt().Cmp(liquidationInfo.DebtAmountBase.BigInt()) > 0 {
 				liquidationInfo.DebtAsset = userReserve.Reserve
-				liquidationInfo.DebtAmount = userReserve.Amount
-				liquidationInfo.DebtAmountBase = amountBaseBigInt
+				liquidationInfo.DebtAmount = userReserve.BorrowedAmount
+				liquidationInfo.DebtAmountBase = borrowedAmountBase
 			}
 		}
 
 		// update total collateral and max collateral amount
 		if userReserve.IsUsingAsCollateral {
-			liquidationInfo.TotalCollateralBase = liquidationInfo.TotalCollateralBase.Add(amountBaseBigInt)
-			if liquidationInfo.CollateralAsset == "" || amountBaseBigInt.BigInt().Cmp(liquidationInfo.CollateralAmountBase.BigInt()) > 0 {
+			liquidationInfo.TotalCollateralBase = liquidationInfo.TotalCollateralBase.Add(collateralAmountBase)
+			if collateralAmountBase.BigInt().Cmp(liquidationInfo.CollateralAmountBase.BigInt()) > 0 {
 				liquidationInfo.CollateralAsset = userReserve.Reserve
-				liquidationInfo.CollateralAmount = userReserve.Amount
-				liquidationInfo.CollateralAmountBase = amountBaseBigInt
+				liquidationInfo.CollateralAmount = userReserve.CollateralAmount
+				liquidationInfo.CollateralAmountBase = collateralAmountBase
 			}
 		}
 	}
@@ -186,12 +176,18 @@ func (s *Service) syncPricesForReserveList(ctx context.Context) error {
 			toBeLiquidated := make([]string, 0)
 			for _, loan := range batch {
 				liquidationInfo := userLiquidationInfoMap[loan.User]
+				liquidationInfo.LiquidationThreshold = loan.LiquidationInfo.LiquidationThreshold
+				// 如果 debtAsset 或 collateralAsset 为空，则需要重新同步
+				healthFactor := loan.HealthFactor
 				if liquidationInfo.DebtAsset == "" || liquidationInfo.CollateralAsset == "" {
-					s.logger.Error("debt or collateral is empty, user: %s", zap.String("user", loan.User), zap.String("liquidationInfo", liquidationInfo.String()))
-					continue
+					// should resync via liquidationInfo.LiquidationThreshold  =
+					s.logger.Error("debt or collateral is empty, resync", zap.String("user", loan.User), zap.String("liquidationInfo", liquidationInfo.String()))
+					liquidationInfo.LiquidationThreshold = models.NewBigInt(big.NewInt(0))
+				} else {
+					// 如果 debtAsset 和 collateralAsset 不为空，则计算健康因子
+					healthFactor = calcHealthFactor(liquidationInfo.TotalCollateralBase.BigInt(), liquidationInfo.TotalDebtBase.BigInt(), loan.LiquidationInfo.LiquidationThreshold.BigInt())
+					s.logger.Info("health factor changed", zap.String("user", loan.User), zap.Float64("lastHealthFactor", loan.HealthFactor), zap.Float64("healthFactor", healthFactor))
 				}
-				healthFactor := calcHealthFactor(liquidationInfo.TotalCollateralBase.BigInt(), liquidationInfo.TotalDebtBase.BigInt(), loan.LiquidationInfo.LiquidationThreshold.BigInt())
-				s.logger.Info("health factor changed", zap.String("user", loan.User), zap.Float64("lastHealthFactor", loan.HealthFactor), zap.Float64("healthFactor", healthFactor))
 
 				liquidationInfos = append(liquidationInfos, &UpdateLiquidationInfo{
 					User:            loan.User,

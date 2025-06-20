@@ -694,3 +694,14 @@ MIT License
 2. DeployContracts
 3. Update .env
 4. testTheGraph.js
+
+
+
+# 清算
+a=b
+a!=b
+  a in flash
+  a not int flash
+
+total
+partial
