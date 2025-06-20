@@ -6,11 +6,39 @@ import (
 	"liquidation-bot/internal/models"
 	"math/big"
 	"strings"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"gorm.io/gorm/schema"
 )
+
+var (
+	reserveBorrowedAmountField      string
+	reserveCollateralAmountField    string
+	reserveIsBorrowingField         string
+	reserveIsUsingAsCollateralField string
+)
+
+func init() {
+	schema, err := schema.Parse(&models.Reserve{}, &sync.Map{}, schema.NamingStrategy{})
+	if err != nil {
+		panic(fmt.Sprintf("failed to parse Reserve schema: %v", err))
+	}
+	for _, field := range schema.Fields {
+		switch field.Name {
+		case "BorrowedAmount":
+			reserveBorrowedAmountField = field.DBName
+		case "CollateralAmount":
+			reserveCollateralAmountField = field.DBName
+		case "IsBorrowing":
+			reserveIsBorrowingField = field.DBName
+		case "IsUsingAsCollateral":
+			reserveIsUsingAsCollateralField = field.DBName
+		}
+	}
+}
 
 type DBWrapper struct {
 	db *gorm.DB
@@ -186,7 +214,7 @@ func (w *DBWrapper) GetUserLoansAndReservesByReserves(chainName string, reserves
 		return nil, nil, fmt.Errorf("failed to query users: %w", err)
 	}
 	if len(users) == 0 {
-		return nil, nil, fmt.Errorf("no user found")
+		return nil, nil, gorm.ErrRecordNotFound
 	}
 
 	// Step 2: 查询所有这些用户的激活 loans
@@ -215,16 +243,21 @@ func (w *DBWrapper) GetLiquidationInfo(chainName string, user string) (*models.L
 }
 
 func (w *DBWrapper) AddUserReserves(chainName string, user string, reserves []*models.Reserve) error {
-	// upsert
-	for _, reserve := range reserves {
-		if err := w.db.Clauses(clause.OnConflict{
-			Columns: []clause.Column{{Name: "chain_name"}, {Name: "user"}, {Name: "reserve"}},
-			DoUpdates: clause.AssignmentColumns([]string{
-				`amount`, `is_borrowing`, `is_using_as_collateral`,
-			}),
-		}).Create(&reserve).Error; err != nil {
-			return fmt.Errorf("failed to upsert user reserve: %w", err)
-		}
+	if len(reserves) == 0 {
+		return nil
+	}
+
+	// 批量 upsert
+	if err := w.db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "chain_name"}, {Name: "user"}, {Name: "reserve"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			reserveBorrowedAmountField,
+			reserveCollateralAmountField,
+			reserveIsBorrowingField,
+			reserveIsUsingAsCollateralField,
+		}),
+	}).CreateInBatches(reserves, 100).Error; err != nil {
+		return fmt.Errorf("failed to batch upsert user reserves: %w", err)
 	}
 
 	return nil

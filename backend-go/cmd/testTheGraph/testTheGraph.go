@@ -13,9 +13,11 @@ import (
 	"gorm.io/gorm"
 )
 
+// examples:
+//   - go run cmd/testTheGraph/testTheGraph.go
 const (
 	authToken = "ceb62ad7a9ad0cc24afbfa7c916cea3a"
-	dbPath    = "/Users/sh001/Documents/codes/ivan/liquidation/backend-go/tmp.db"
+	dbPath    = "/Users/sh001/Documents/codes/ivan/liquidation/backend-go/prod.db"
 	pageSize  = 1000 // 每页查询数量
 
 	// eth

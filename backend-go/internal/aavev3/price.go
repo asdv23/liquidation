@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
 func (s *Service) updateReservesListAndPrice() error {
@@ -107,6 +108,10 @@ func (s *Service) syncPricesForReserveList(ctx context.Context) error {
 	// find all user reserves with updatedReserves
 	userLoans, userReserves, err := s.dbWrapper.GetUserLoansAndReservesByReserves(s.chain.ChainName, updatedReserves)
 	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			s.logger.Info("no user reserves to update", zap.Any("updatedReserves", updatedReserves))
+			return nil
+		}
 		return fmt.Errorf("failed to get user reserves: %w", err)
 	}
 
@@ -140,7 +145,7 @@ func (s *Service) syncPricesForReserveList(ctx context.Context) error {
 		// update total debt and max debt amount
 		if userReserve.IsBorrowing {
 			liquidationInfo.TotalDebtBase = liquidationInfo.TotalDebtBase.Add(borrowedAmountBase)
-			if borrowedAmountBase.BigInt().Cmp(liquidationInfo.DebtAmountBase.BigInt()) > 0 {
+			if liquidationInfo.DebtAmountBase == nil || borrowedAmountBase.BigInt().Cmp(liquidationInfo.DebtAmountBase.BigInt()) > 0 {
 				liquidationInfo.DebtAsset = userReserve.Reserve
 				liquidationInfo.DebtAmount = userReserve.BorrowedAmount
 				liquidationInfo.DebtAmountBase = borrowedAmountBase
@@ -150,7 +155,7 @@ func (s *Service) syncPricesForReserveList(ctx context.Context) error {
 		// update total collateral and max collateral amount
 		if userReserve.IsUsingAsCollateral {
 			liquidationInfo.TotalCollateralBase = liquidationInfo.TotalCollateralBase.Add(collateralAmountBase)
-			if collateralAmountBase.BigInt().Cmp(liquidationInfo.CollateralAmountBase.BigInt()) > 0 {
+			if liquidationInfo.CollateralAmountBase == nil || collateralAmountBase.BigInt().Cmp(liquidationInfo.CollateralAmountBase.BigInt()) > 0 {
 				liquidationInfo.CollateralAsset = userReserve.Reserve
 				liquidationInfo.CollateralAmount = userReserve.CollateralAmount
 				liquidationInfo.CollateralAmountBase = collateralAmountBase
