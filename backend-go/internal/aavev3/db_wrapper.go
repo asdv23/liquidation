@@ -148,7 +148,7 @@ func (w *DBWrapper) GetLiquidationLoans(ctx context.Context, chainName string) (
 func (w *DBWrapper) GetNoLiquidationInfoLoans(ctx context.Context, chainName string) ([]*models.Loan, error) {
 	loans := make([]*models.Loan, 0)
 	if err := w.db.Where(&models.Loan{ChainName: chainName, IsActive: true}).Where(
-		"liquidation_collateral_asset IS NULL OR liquidation_debt_asset IS NULL OR liquidation_liquidation_threshold = 0",
+		"liquidation_collateral_asset IS NULL OR liquidation_debt_asset IS NULL OR liquidation_liquidation_threshold = 0 OR health_factor = 0 OR resync = true",
 	).Find(&loans).Error; err != nil {
 		return nil, fmt.Errorf("failed to get liquidation loans: %w", err)
 	}
@@ -176,11 +176,12 @@ func (w *DBWrapper) CreateOrUpdateActiveLoan(chainName string, user string) (*mo
 		ChainName: chainName,
 		User:      user,
 		IsActive:  true,
+		Resync:    true,
 	}
 	if err := w.db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "chain_name"}, {Name: "user"}},
 		DoUpdates: clause.AssignmentColumns([]string{
-			"is_active",
+			"is_active", "resync",
 		}),
 	}).Create(&loan).Error; err != nil {
 		return nil, fmt.Errorf("failed to upsert active loan: %w", err)
@@ -247,20 +248,20 @@ func (w *DBWrapper) AddUserReserves(chainName string, user string, reserves []*m
 		return nil
 	}
 
-	// 批量 upsert
-	if err := w.db.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "chain_name"}, {Name: "user"}, {Name: "reserve"}},
-		DoUpdates: clause.AssignmentColumns([]string{
-			reserveBorrowedAmountField,
-			reserveCollateralAmountField,
-			reserveIsBorrowingField,
-			reserveIsUsingAsCollateralField,
-		}),
-	}).CreateInBatches(reserves, 100).Error; err != nil {
-		return fmt.Errorf("failed to batch upsert user reserves: %w", err)
-	}
+	return w.db.Transaction(func(tx *gorm.DB) error {
+		// Step 1: 删除该用户所有 reserve（按 chainName + user）
+		if err := tx.Where("chain_name = ? AND user = ?", chainName, user).
+			Delete(&models.Reserve{}).Error; err != nil {
+			return fmt.Errorf("failed to delete existing user reserves: %w", err)
+		}
 
-	return nil
+		// Step 2: 批量插入新的 reserves（无需 upsert）
+		if err := tx.CreateInBatches(reserves, 100).Error; err != nil {
+			return fmt.Errorf("failed to insert new user reserves: %w", err)
+		}
+
+		return nil
+	})
 }
 
 // BatchUpdateLoanLiquidationInfos 高性能批量更新贷款清算信息

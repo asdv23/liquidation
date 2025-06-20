@@ -7,15 +7,14 @@ import (
 	"math/big"
 	"strings"
 	"sync"
-	"time"
 
-	"github.com/avast/retry-go/v4"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"go.uber.org/zap"
 )
+
+type ReconnectFn func()
 
 type Chain struct {
 	sync.RWMutex
@@ -26,41 +25,27 @@ type Chain struct {
 	ChainName string
 	ChainID   *big.Int
 
-	reconnectCh  chan struct{}
-	reconnectFns []ReconnectFn
-	privateKey   string
+	privateKey string
 
 	client    *ethclient.Client
 	auth      func() (*bind.TransactOpts, error)
 	contracts *Contracts
-	baseFee   *big.Int
 }
 
 func NewChain(ctx context.Context, logger *zap.Logger, chainName string, privateKey string, cfg config.ChainConfig) (*Chain, error) {
 	c := &Chain{
-		Ctx:         ctx,
-		Logger:      logger.Named(chainName),
-		ChainName:   chainName,
-		Cfg:         cfg,
-		reconnectCh: make(chan struct{}, 1),
-		privateKey:  privateKey,
+		Ctx:        ctx,
+		Logger:     logger.Named(chainName),
+		ChainName:  chainName,
+		Cfg:        cfg,
+		privateKey: privateKey,
 	}
 
 	if err := c.connect(); err != nil {
 		return nil, err
 	}
 
-	go c.reconnect()
 	return c, nil
-}
-
-type ReconnectFn func()
-
-func (c *Chain) Register(reconnectFn ReconnectFn) {
-	c.Lock()
-	defer c.Unlock()
-
-	c.reconnectFns = append(c.reconnectFns, reconnectFn)
 }
 
 func (c *Chain) connect() error {
@@ -80,13 +65,8 @@ func (c *Chain) connect() error {
 	if err != nil {
 		return fmt.Errorf("failed to get chain id: %w", err)
 	}
-	header, err := wsClient.HeaderByNumber(c.Ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to get header: %w", err)
-	}
 	c.client = wsClient
 	c.ChainID = chainID
-	c.baseFee = header.BaseFee
 
 	// 创建认证
 	key, err := crypto.HexToECDSA(strings.TrimPrefix(c.privateKey, "0x"))
@@ -110,70 +90,7 @@ func (c *Chain) connect() error {
 	c.contracts = contracts
 	c.Logger.Info("contract addresses", zap.Any("contracts", c.contracts.Addresses))
 
-	// 连接成功后订阅事件
-	go c.subscribe()
 	return nil
-}
-
-func (c *Chain) subscribe() {
-	c.RLock()
-	client := c.client
-	c.RUnlock()
-
-	defer client.Close()
-
-	headers := make(chan *types.Header, 100)
-	sub, err := client.SubscribeNewHead(c.Ctx, headers)
-	if err != nil {
-		c.Logger.Error("Subscription failed", zap.Error(err))
-		c.reconnectCh <- struct{}{} // 触发重连
-		return
-	}
-	defer sub.Unsubscribe()
-
-	for {
-		select {
-		case <-c.Ctx.Done():
-			return
-		case err := <-sub.Err():
-			c.Logger.Error("Subscription error", zap.Error(err))
-			c.reconnectCh <- struct{}{} // 触发重连
-			return
-		case header := <-headers:
-			c.Logger.Debug("New block", zap.Uint64("blockNumber", header.Number.Uint64()))
-			if c.baseFee.Cmp(header.BaseFee) != 0 {
-				c.baseFee = header.BaseFee
-				c.Logger.Info("New base fee", zap.String("baseFee", header.BaseFee.String()))
-			}
-		}
-	}
-}
-
-func (c *Chain) reconnect() {
-	for {
-		select {
-		case <-c.Ctx.Done():
-			return
-		case <-c.reconnectCh:
-			c.Logger.Info("WebSocket disconnected, attempting to reconnect...")
-			err := retry.Do(func() error {
-				if err := c.connect(); err != nil {
-					c.Logger.Error("Reconnect attempt failed", zap.Error(err))
-					return fmt.Errorf("failed to reconnect: %w", err)
-				}
-				c.Logger.Info("Reconnected successfully")
-				for _, fn := range c.reconnectFns {
-					fn := fn
-					c.Logger.Info("Reconnecting", zap.String("fn", fmt.Sprintf("%T", fn)))
-					go fn()
-				}
-				return nil
-			}, retry.Attempts(5), retry.Delay(time.Second), retry.MaxDelay(time.Minute))
-			if err != nil {
-				c.Logger.Fatal("Failed to reconnect", zap.Error(err))
-			}
-		}
-	}
 }
 
 func (c *Chain) GetClient() *ethclient.Client {
@@ -192,10 +109,4 @@ func (c *Chain) GetContracts() *Contracts {
 	c.RLock()
 	defer c.RUnlock()
 	return c.contracts
-}
-
-func (c *Chain) GetBaseFee() *big.Int {
-	c.RLock()
-	defer c.RUnlock()
-	return c.baseFee
 }

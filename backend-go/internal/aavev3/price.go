@@ -124,7 +124,7 @@ func (s *Service) syncPricesForReserveList(ctx context.Context) error {
 		borrowedAmountBase := models.NewBigInt(amountToBase(userReserve.BorrowedAmount.BigInt(), tokenInfo.Decimals.BigInt(), tokenInfo.Price.BigInt()))
 		collateralAmountBase := models.NewBigInt(amountToBase(userReserve.CollateralAmount.BigInt(), tokenInfo.Decimals.BigInt(), tokenInfo.Price.BigInt()))
 		if _, ok := userLiquidationInfoMap[userReserve.User]; !ok {
-			liquidationInfo := &models.LiquidationInfo{}
+			liquidationInfo := &models.LiquidationInfo{TotalCollateralBase: models.NewBigInt(big.NewInt(0)), TotalDebtBase: models.NewBigInt(big.NewInt(0))}
 			if userReserve.IsBorrowing {
 				liquidationInfo.TotalDebtBase = borrowedAmountBase
 				liquidationInfo.DebtAsset = userReserve.Reserve

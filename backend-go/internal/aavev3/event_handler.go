@@ -6,75 +6,84 @@ import (
 	aavev3 "liquidation-bot/bindings/aavev3"
 	"liquidation-bot/pkg/blockchain"
 	"math/big"
+	"time"
 
+	"github.com/ethereum/go-ethereum/event"
 	"go.uber.org/zap"
 )
+
+func watchWithReconnect[T any](
+	ctx context.Context,
+	logger *zap.Logger,
+	name string,
+	watchFunc func(chan T) (event.Subscription, error),
+	handler func(T),
+) {
+	logger = logger.Named(name)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		sink := make(chan T, 100)
+		sub, err := watchFunc(sink)
+		if err != nil {
+			logger.Error("Watch failed", zap.Error(err))
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		logger.Info("Subscribed to event")
+
+	handleLoop:
+		for {
+			select {
+			case <-ctx.Done():
+				sub.Unsubscribe()
+				return
+			case err := <-sub.Err():
+				logger.Warn("Subscription dropped", zap.Error(err))
+				sub.Unsubscribe()
+				time.Sleep(5 * time.Second)
+				break handleLoop
+			case evt := <-sink:
+				handler(evt)
+			}
+		}
+	}
+}
 
 func (s *Service) handleEvents(ctx context.Context) error {
 	s.logger.Info("start to handle events", zap.String("aavev3_pool", s.chain.GetContracts().Addresses[blockchain.ContractTypeAaveV3Pool].Hex()))
 	opts := s.getWatchOpts()
 
-	borrowSink := make(chan *aavev3.PoolBorrow, 100)
-	borrowSub, err := s.chain.GetContracts().AaveV3Pool.WatchBorrow(opts, borrowSink, nil, nil, nil)
-	if err != nil {
-		return fmt.Errorf("failed to watch borrow events: %w", err)
-	}
-	defer borrowSub.Unsubscribe()
+	// borrow
+	go watchWithReconnect(ctx, s.logger, "borrow", func(sink chan *aavev3.PoolBorrow) (event.Subscription, error) {
+		return s.chain.GetContracts().AaveV3Pool.WatchBorrow(opts, sink, nil, nil, nil)
+	}, s.handleBorrowEvent)
 
-	repaySink := make(chan *aavev3.PoolRepay, 100)
-	repaySub, err := s.chain.GetContracts().AaveV3Pool.WatchRepay(opts, repaySink, nil, nil, nil)
-	if err != nil {
-		return fmt.Errorf("failed to watch repay events: %w", err)
-	}
-	defer repaySub.Unsubscribe()
+	// repay
+	go watchWithReconnect(ctx, s.logger, "repay", func(sink chan *aavev3.PoolRepay) (event.Subscription, error) {
+		return s.chain.GetContracts().AaveV3Pool.WatchRepay(opts, sink, nil, nil, nil)
+	}, s.handleRepayEvent)
 
-	supplySink := make(chan *aavev3.PoolSupply, 100)
-	supplySub, err := s.chain.GetContracts().AaveV3Pool.WatchSupply(opts, supplySink, nil, nil, nil)
-	if err != nil {
-		return fmt.Errorf("failed to watch supply events: %w", err)
-	}
-	defer supplySub.Unsubscribe()
+	// supply
+	go watchWithReconnect(ctx, s.logger, "supply", func(sink chan *aavev3.PoolSupply) (event.Subscription, error) {
+		return s.chain.GetContracts().AaveV3Pool.WatchSupply(opts, sink, nil, nil, nil)
+	}, s.handleSupplyEvent)
 
-	withdrawSink := make(chan *aavev3.PoolWithdraw, 100)
-	withdrawSub, err := s.chain.GetContracts().AaveV3Pool.WatchWithdraw(opts, withdrawSink, nil, nil, nil)
-	if err != nil {
-		return fmt.Errorf("failed to watch withdraw events: %w", err)
-	}
-	defer withdrawSub.Unsubscribe()
+	// withdraw
+	go watchWithReconnect(ctx, s.logger, "withdraw", func(sink chan *aavev3.PoolWithdraw) (event.Subscription, error) {
+		return s.chain.GetContracts().AaveV3Pool.WatchWithdraw(opts, sink, nil, nil, nil)
+	}, s.handleWithdrawEvent)
 
-	liquidationSink := make(chan *aavev3.PoolLiquidationCall, 100)
-	liquidationSub, err := s.chain.GetContracts().AaveV3Pool.WatchLiquidationCall(opts, liquidationSink, nil, nil, nil)
-	if err != nil {
-		return fmt.Errorf("failed to watch liquidation events: %w", err)
-	}
-	defer liquidationSub.Unsubscribe()
+	// liquidation
+	go watchWithReconnect(ctx, s.logger, "liquidation", func(sink chan *aavev3.PoolLiquidationCall) (event.Subscription, error) {
+		return s.chain.GetContracts().AaveV3Pool.WatchLiquidationCall(opts, sink, nil, nil, nil)
+	}, s.handleLiquidationEvent)
 
-	for {
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("context done: %w", ctx.Err())
-		case err := <-borrowSub.Err():
-			return fmt.Errorf("failed to watch borrow events: %w", err)
-		case err := <-repaySub.Err():
-			return fmt.Errorf("failed to watch repay events: %w", err)
-		case err := <-supplySub.Err():
-			return fmt.Errorf("failed to watch supply events: %w", err)
-		case err := <-withdrawSub.Err():
-			return fmt.Errorf("failed to watch withdraw events: %w", err)
-		case err := <-liquidationSub.Err():
-			return fmt.Errorf("failed to watch liquidation events: %w", err)
-		case borrowEvent := <-borrowSink:
-			s.handleBorrowEvent(borrowEvent)
-		case repayEvent := <-repaySink:
-			s.handleRepayEvent(repayEvent)
-		case supplyEvent := <-supplySink:
-			s.handleSupplyEvent(supplyEvent)
-		case withdrawEvent := <-withdrawSink:
-			s.handleWithdrawEvent(withdrawEvent)
-		case liquidationEvent := <-liquidationSink:
-			s.handleLiquidationEvent(liquidationEvent)
-		}
-	}
+	return nil
 }
 
 func (s *Service) handleBorrowEvent(event *aavev3.PoolBorrow) {
@@ -87,7 +96,7 @@ func (s *Service) handleBorrowEvent(event *aavev3.PoolBorrow) {
 	s.logger.Info(" - ", zap.Any("BorrowRate", event.BorrowRate))
 	s.logger.Info(" - ", zap.Any("ReferralCode", event.ReferralCode))
 
-	if err := s.updateLoan(event.User.Hex()); err != nil {
+	if err := s.resyncLoan(event.User.Hex()); err != nil {
 		s.logger.Error("failed to update loan", zap.Error(err), zap.String("user", event.User.Hex()))
 	}
 }
@@ -100,7 +109,7 @@ func (s *Service) handleRepayEvent(event *aavev3.PoolRepay) {
 	s.infoAmount("Amount", event.Reserve.Hex(), event.Amount)
 	s.logger.Info(" - ", zap.Any("UseATokens", event.UseATokens))
 
-	if err := s.updateLoan(event.User.Hex()); err != nil {
+	if err := s.resyncLoan(event.User.Hex()); err != nil {
 		s.logger.Error("failed to update loan", zap.Error(err), zap.String("user", event.User.Hex()))
 	}
 }
@@ -113,7 +122,7 @@ func (s *Service) handleSupplyEvent(event *aavev3.PoolSupply) {
 	s.infoAmount("Amount", event.Reserve.Hex(), event.Amount)
 	s.logger.Info(" - ", zap.Any("ReferralCode", event.ReferralCode))
 
-	if err := s.updateLoan(event.User.Hex()); err != nil {
+	if err := s.resyncLoan(event.User.Hex()); err != nil {
 		s.logger.Error("failed to update loan", zap.Error(err), zap.String("user", event.User.Hex()))
 	}
 }
@@ -125,7 +134,7 @@ func (s *Service) handleWithdrawEvent(event *aavev3.PoolWithdraw) {
 	s.logger.Info(" - ", zap.Any("To", event.To.Hex()))
 	s.infoAmount("Amount", event.Reserve.Hex(), event.Amount)
 
-	if err := s.updateLoan(event.User.Hex()); err != nil {
+	if err := s.resyncLoan(event.User.Hex()); err != nil {
 		s.logger.Error("failed to update loan", zap.Error(err), zap.String("user", event.User.Hex()))
 	}
 }
@@ -140,21 +149,22 @@ func (s *Service) handleLiquidationEvent(event *aavev3.PoolLiquidationCall) {
 	s.logger.Info(" - ", zap.Any("Liquidator", event.Liquidator.Hex()))
 	s.logger.Info(" - ", zap.Any("ReceiveAToken", event.ReceiveAToken))
 
-	if err := s.updateLoan(event.User.Hex()); err != nil {
+	if err := s.resyncLoan(event.User.Hex()); err != nil {
 		s.logger.Error("failed to update loan", zap.Error(err), zap.String("user", event.User.Hex()))
 	}
 }
 
-func (s *Service) updateLoan(user string) error {
-	loan, err := s.dbWrapper.CreateOrUpdateActiveLoan(s.chain.ChainName, user)
+func (s *Service) resyncLoan(user string) error {
+	// resync set to true, wait 5min to sync for all
+	_, err := s.dbWrapper.CreateOrUpdateActiveLoan(s.chain.ChainName, user)
 	if err != nil {
 		return fmt.Errorf("failed to create or update loan: %w", err)
 	}
 
 	// sync health factor
-	if err := s.syncHealthFactorForUser(user, loan); err != nil {
-		s.logger.Error("failed to sync health factor for user", zap.Error(err), zap.String("user", user))
-	}
+	// if err := s.syncHealthFactorForUser(user, loan); err != nil {
+	// 	s.logger.Error("failed to sync health factor for user", zap.Error(err), zap.String("user", user))
+	// }
 
 	return nil
 }

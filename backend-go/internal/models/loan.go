@@ -12,6 +12,7 @@ type Loan struct {
 	ChainName         string `gorm:"uniqueIndex:idx_chain_user,priority:1;index:idx_chain_active,priority:1"`
 	User              string `gorm:"uniqueIndex:idx_chain_user,priority:2"`
 	IsActive          bool   `gorm:"default:true;index:idx_chain_active,priority:2"`
+	Resync            bool   `gorm:"default:false"`
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 	HealthFactor      float64

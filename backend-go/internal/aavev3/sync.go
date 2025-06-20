@@ -243,6 +243,7 @@ func (s *Service) findBestLiquidationInfo(user string, userConfig *aavev3.DataTy
 				liquidationInfo.DebtAsset = asset.Hex()
 			}
 			reserve.BorrowedAmount = models.NewBigInt(debt)
+			reserve.BorrowedAmountBase = baseBigInt
 			reserve.IsBorrowing = true
 			s.logger.Info("borrowing", zap.String("user", user), zap.Any("reserve", asset.Hex()), zap.Any("amount", debt), zap.Any("base", base))
 		}
@@ -258,6 +259,7 @@ func (s *Service) findBestLiquidationInfo(user string, userConfig *aavev3.DataTy
 				liquidationInfo.CollateralAsset = asset.Hex()
 			}
 			reserve.CollateralAmount = models.NewBigInt(collateral)
+			reserve.CollateralAmountBase = baseBigInt
 			reserve.IsUsingAsCollateral = true
 			s.logger.Info("collateral", zap.String("user", user), zap.Any("reserve", asset.Hex()), zap.Any("amount", collateral), zap.Any("base", base))
 		}

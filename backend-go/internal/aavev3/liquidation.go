@@ -84,6 +84,12 @@ func (s *Service) liquidateWithUniswapV3(ctx context.Context, loan *models.Loan,
 	if err != nil {
 		return fmt.Errorf("failed to get auth: %w", err)
 	}
+
+	// base fee
+	header, err := s.chain.GetClient().HeaderByNumber(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to get header: %w", err)
+	}
 	// use high gas tip
 	gasTipCap, err := s.chain.GetClient().SuggestGasTipCap(ctx)
 	if err != nil {
@@ -91,7 +97,7 @@ func (s *Service) liquidateWithUniswapV3(ctx context.Context, loan *models.Loan,
 	}
 	tip := gasTipCap.Mul(gasTipCap, big.NewInt(15)).Div(gasTipCap, big.NewInt(10))
 	auth.GasTipCap = tip
-	auth.GasFeeCap = tip.Add(tip, s.chain.GetBaseFee())
+	auth.GasFeeCap = tip.Add(tip, header.BaseFee)
 
 	// use pending state
 	auth.Nonce = nil
@@ -101,7 +107,7 @@ func (s *Service) liquidateWithUniswapV3(ctx context.Context, loan *models.Loan,
 	logger.Info("prepared uniswap v3 gas params",
 		zap.String("gasTipCap", gasTipCap.String()),
 		zap.String("tip", tip.String()),
-		zap.String("baseFee", s.chain.GetBaseFee().String()),
+		zap.String("baseFee", header.BaseFee.String()),
 		zap.String("feeCap", auth.GasFeeCap.String()),
 	)
 
@@ -132,6 +138,12 @@ func (s *Service) liquidateWithOdos(ctx context.Context, loan *models.Loan, debt
 	if err != nil {
 		return fmt.Errorf("failed to get aggregator data: %w", err)
 	}
+
+	// base fee
+	header, err := s.chain.GetClient().HeaderByNumber(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to get header: %w", err)
+	}
 	// use high gas tip
 	gasTipCap, err := s.chain.GetClient().SuggestGasTipCap(ctx)
 	if err != nil {
@@ -139,7 +151,7 @@ func (s *Service) liquidateWithOdos(ctx context.Context, loan *models.Loan, debt
 	}
 	tip := gasTipCap.Mul(gasTipCap, big.NewInt(15)).Div(gasTipCap, big.NewInt(10))
 	auth.GasTipCap = tip
-	auth.GasFeeCap = tip.Add(tip, s.chain.GetBaseFee())
+	auth.GasFeeCap = tip.Add(tip, header.BaseFee)
 
 	// use pending state
 	auth.Nonce = nil
@@ -149,7 +161,7 @@ func (s *Service) liquidateWithOdos(ctx context.Context, loan *models.Loan, debt
 	logger.Info("prepared odos gas params",
 		zap.String("gasTipCap", gasTipCap.String()),
 		zap.String("tip", tip.String()),
-		zap.String("baseFee", s.chain.GetBaseFee().String()),
+		zap.String("baseFee", header.BaseFee.String()),
 		zap.String("feeCap", auth.GasFeeCap.String()),
 		zap.String("pathData", common.Bytes2Hex(pathData)),
 	)

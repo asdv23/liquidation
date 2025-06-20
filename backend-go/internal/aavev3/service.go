@@ -54,7 +54,6 @@ func NewService(
 		liquidatingUsers:   make(map[string]struct{}),
 		reservesList:       make([]common.Address, 0),
 	}
-	chain.Register(s.Initialize)
 	go s.Initialize()
 	return s, nil
 }
